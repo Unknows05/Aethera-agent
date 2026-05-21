@@ -13,30 +13,43 @@ Write-Host "  ║   Autonomous AI Trading Agent        ║" -ForegroundColor Cya
 Write-Host "  ╚══════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 
-function Check-Command {
-    param($Name)
-    if (Get-Command $Name -ErrorAction SilentlyContinue) {
-        Write-Host "[OK] $Name found" -ForegroundColor Green
-        return $true
-    } else {
-        Write-Host "[ERR] $Name not found. Please install it first." -ForegroundColor Red
-        return $false
+# ── Runtime Detection ──────────────────────────────────
+
+$runtime = ""
+$runtimeCmd = ""
+
+if (Get-Command "bun" -ErrorAction SilentlyContinue) {
+    $bunVer = bun --version
+    Write-Host "[OK] Bun $bunVer" -ForegroundColor Green
+    $runtime = "bun"
+    $runtimeCmd = "bun"
+} elseif (Get-Command "node" -ErrorAction SilentlyContinue) {
+    $nodeVer = node -v
+    if ($nodeVer -match 'v(\d+)') {
+        $major = [int]$Matches[1]
+        if ($major -lt 20) {
+            Write-Host "[ERR] Node.js 20+ required (found $nodeVer)" -ForegroundColor Red
+            Write-Host "  Download: https://nodejs.org/" -ForegroundColor Cyan
+            exit 1
+        }
     }
+    Write-Host "[OK] Node.js $(node -v)" -ForegroundColor Green
+    $runtime = "node"
+    $runtimeCmd = "node"
+} else {
+    Write-Host "[ERR] No supported runtime found. Install one:" -ForegroundColor Red
+    Write-Host "  - Node.js 20+  -> https://nodejs.org/" -ForegroundColor Cyan
+    Write-Host "  - Bun >=1.0    -> https://bun.sh/" -ForegroundColor Cyan
+    exit 1
 }
 
-Write-Host "Checking dependencies..." -ForegroundColor Cyan
-if (-not (Check-Command "git")) { exit 1 }
-if (-not (Check-Command "node")) { exit 1 }
-
-$nodeVer = node -v
-if ($nodeVer -match 'v(\d+)') {
-    $major = [int]$Matches[1]
-    if ($major -lt 20) {
-        Write-Host "[ERR] Node.js 20+ required (found $nodeVer)" -ForegroundColor Red
-        exit 1
-    }
+if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
+    Write-Host "[ERR] Git not found. Install: https://git-scm.com/" -ForegroundColor Red
+    exit 1
 }
-Write-Host "[OK] Node.js $(node -v)" -ForegroundColor Green
+Write-Host "[OK] Git" -ForegroundColor Green
+
+# ── Install / Update ────────────────────────────────────
 
 if (Test-Path "$installDir\.git") {
     Write-Host "Updating existing installation..." -ForegroundColor Yellow
@@ -74,12 +87,13 @@ if (Test-Path "tui") {
 $binDir = "$env:USERPROFILE\.local\bin"
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
-$wrapperPath = "$binDir\aethera.cmd"
-@"
-@echo off
-set "AETHERA_ROOT=${installDir}\agent"
-node "%AETHERA_ROOT%\dist\cli\index.js" %*
-"@ | Out-File -FilePath $wrapperPath -Encoding ASCII
+if ($runtime -eq "bun") {
+    $wrapperContent = "@echo off`r`nset `"AETHERA_ROOT=${installDir}\agent`"`r`nbun `"%AETHERA_ROOT%\src\cli\index.ts`" %*"
+} else {
+    $wrapperContent = "@echo off`r`nset `"AETHERA_ROOT=${installDir}\agent`"`r`nnode `"%AETHERA_ROOT%\dist\cli\index.js`" %*"
+}
+
+$wrapperContent | Out-File -FilePath "$binDir\aethera.cmd" -Encoding ASCII
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Green
@@ -87,8 +101,10 @@ Write-Host "║   Aethera v$version installed!           ║" -ForegroundColor G
 Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. aethera init     -- Setup wizard (Binance LLM config)" -ForegroundColor Yellow
+Write-Host "  1. aethera init     -- Setup wizard" -ForegroundColor Yellow
 Write-Host "  2. aethera start    -- Launch TUI" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Uninstall: aethera uninstall" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Add to PATH: $binDir" -ForegroundColor Cyan
 Write-Host ""

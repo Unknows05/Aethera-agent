@@ -21,26 +21,37 @@ echo "  ║   Autonomous AI Trading Agent        ║"
 echo "  ╚══════════════════════════════════════╝"
 echo -e "${NC}"
 
-check_command() {
-    if ! command -v "$1" &>/dev/null; then
-        echo -e "${RED}✗ $1 not found. Please install it first.${NC}"
-        return 1
+# ── Runtime Detection ──────────────────────────────────
+RUNTIME=""
+RUNTIME_CMD=""
+
+if command -v bun &>/dev/null; then
+    BUN_VERSION=$(bun --version 2>/dev/null || echo "?")
+    echo -e "${GREEN}✓ Bun $BUN_VERSION${NC}"
+    RUNTIME="bun"
+    RUNTIME_CMD="bun"
+elif command -v node &>/dev/null; then
+    NODE_VERSION=$(node -v | sed 's/v//')
+    NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d. -f1)
+    if [ "$NODE_MAJOR" -lt 20 ]; then
+        echo -e "${RED}✗ Node.js 20+ required (found $NODE_VERSION)${NC}"
+        echo -e "  Upgrade: https://nodejs.org/  or  https://github.com/nvm-sh/nvm"
+        exit 1
     fi
-    echo -e "${GREEN}✓ $1 found${NC}"
-}
-
-echo "Checking dependencies..."
-check_command "git" || exit 1
-check_command "node" || exit 1
-
-NODE_VERSION=$(node -v | sed 's/v//' | cut -d. -f1)
-if [ "$NODE_VERSION" -lt 20 ]; then
-    echo -e "${RED}✗ Node.js 20+ required (found $(node -v))${NC}"
-    echo -e "  Install via nvm: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash"
+    echo -e "${GREEN}✓ Node.js $NODE_VERSION${NC}"
+    RUNTIME="node"
+    RUNTIME_CMD="node"
+else
+    echo -e "${RED}✗ No supported runtime found. Install one:${NC}"
+    echo -e "  • Node.js 20+  → ${CYAN}https://nodejs.org/${NC}"
+    echo -e "  • Bun ≥1.0     → ${CYAN}https://bun.sh/${NC}"
+    echo -e "  • nvm          → ${CYAN}https://github.com/nvm-sh/nvm${NC}"
     exit 1
 fi
-echo -e "${GREEN}✓ Node.js $(node -v | sed 's/v//')${NC}"
-echo -e "${GREEN}✓ npm $(npm -v)${NC}"
+
+echo -e "${GREEN}✓ Git${NC}"
+
+# ── Install / Update ────────────────────────────────────
 
 if [ -d "$INSTALL_DIR" ] && [ -d "$INSTALL_DIR/.git" ]; then
     echo -e "\n${YELLOW}Aethera already installed at $INSTALL_DIR${NC}"
@@ -78,15 +89,25 @@ if [ -d "tui" ]; then
     echo -e "${GREEN}✓ TUI built${NC}"
 fi
 
+# ── CLI Wrapper ─────────────────────────────────────────
+
 echo -e "\n${CYAN}Setting up CLI...${NC}"
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 
-cat > "$BIN_DIR/aethera" << WRAPPER
+if [ "$RUNTIME" = "bun" ]; then
+    cat > "$BIN_DIR/aethera" << WRAPPER
+#!/usr/bin/env bash
+AETHERA_ROOT="\${AETHERA_ROOT:-$INSTALL_DIR/agent}"
+exec bun "\$AETHERA_ROOT/src/cli/index.ts" "\$@"
+WRAPPER
+else
+    cat > "$BIN_DIR/aethera" << WRAPPER
 #!/usr/bin/env bash
 AETHERA_ROOT="\${AETHERA_ROOT:-$INSTALL_DIR/agent}"
 exec node "\$AETHERA_ROOT/dist/cli/index.js" "\$@"
 WRAPPER
+fi
 chmod +x "$BIN_DIR/aethera"
 
 PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
@@ -110,6 +131,8 @@ fi
 
 mkdir -p "$INSTALL_DIR/agent/data"
 
+# ── Done ────────────────────────────────────────────────
+
 echo -e "\n${GREEN}╔══════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║   Aethera v${VERSION} installed!           ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════╝${NC}"
@@ -119,10 +142,12 @@ echo -e "    1. ${YELLOW}aethera init${NC}     — Setup wizard (Binance LLM con
 echo -e "    2. ${YELLOW}aethera start${NC}    — Launch TUI"
 echo -e "    3. ${YELLOW}aethera --help${NC}   — All commands"
 echo -e ""
-echo -e "  ${CYAN}Connect to Hivemind:${NC}"
-echo -e "    Set in config.yaml:"
-echo -e "      ${YELLOW}hivemind.enabled: true${NC}"
-echo -e "      ${YELLOW}hivemind.hub: wss://hivemind.aethera-s1.com/api/hivemind/ws${NC}"
+echo -e "  ${CYAN}Connect to Hivemind network:${NC}"
+echo -e "    ${YELLOW}aethera config${NC}  → set hivemind.enabled: true"
+echo -e "    hub: wss://hivemind.aethera-s1.com/api/hivemind/ws"
+echo -e ""
+echo -e "  ${CYAN}Uninstall:${NC}"
+echo -e "    ${YELLOW}aethera uninstall${NC}"
 echo -e ""
 
 if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
@@ -141,7 +166,11 @@ if [[ "$answer" =~ ^[Nn]$ ]]; then
     echo -e "${YELLOW}Run 'aethera init' when ready.${NC}"
 else
     cd "$INSTALL_DIR/agent"
-    exec node dist/cli/index.js init </dev/tty
+    if [ "$RUNTIME" = "bun" ]; then
+        exec bun src/cli/index.ts init </dev/tty
+    else
+        exec node dist/cli/index.js init </dev/tty
+    fi
 fi
 
 echo -e ""

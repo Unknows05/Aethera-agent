@@ -2,6 +2,59 @@
 
 import * as p from "@clack/prompts";
 import pc from "picocolors";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { existsSync, rmSync } from "node:fs";
+import { homedir, platform } from "node:os";
+
+async function uninstall() {
+  console.log("");
+  p.intro("Aethera Uninstall");
+
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const installRoot = resolve(__dirname, "../../..");
+  const dataDir = resolve(installRoot, "agent/data");
+  const isWin = platform() === "win32";
+  const wrapperPaths = isWin
+    ? [resolve(homedir(), ".local/bin/aethera.cmd"), resolve(homedir(), ".local/bin/aethera")]
+    : [resolve(homedir(), ".local/bin/aethera"), resolve(homedir(), ".local/bin/aethera.cmd")];
+
+  console.log(`  Install dir : ${installRoot}`);
+  console.log(`  Data dir    : ${dataDir}`);
+  console.log("");
+
+  const confirm = await p.confirm({
+    message: "Remove Aethera completely? (data + config will be lost)",
+    initialValue: false,
+  });
+
+  if (p.isCancel(confirm) || !confirm) {
+    p.outro("Uninstall cancelled.");
+    return;
+  }
+
+  const s = p.spinner();
+  s.start("Removing...");
+
+  try {
+    for (const wp of wrapperPaths) {
+      if (existsSync(wp)) rmSync(wp);
+    }
+    if (existsSync(dataDir)) rmSync(dataDir, { recursive: true, force: true });
+    if (existsSync(installRoot)) rmSync(installRoot, { recursive: true, force: true });
+    s.stop("Removed successfully");
+    p.outro(pc.green("Aethera has been uninstalled."));
+    if (isWin) {
+      console.log(pc.cyan("  Re-login or refresh PATH environment variable."));
+    } else {
+      console.log(pc.cyan("  Re-login or run: source ~/.zshrc (or ~/.bashrc)"));
+    }
+  } catch (e) {
+    s.stop("Removal failed");
+    p.outro(pc.red(`Error: ${e instanceof Error ? e.message : String(e)}`));
+    process.exit(1);
+  }
+}
 
 async function main() {
   const command = process.argv[2];
@@ -79,6 +132,10 @@ async function main() {
       break;
     }
 
+    case "uninstall":
+      await uninstall();
+      break;
+
     case "config": {
       console.log("Config management coming soon.");
       break;
@@ -131,6 +188,7 @@ function showHelp() {
     positions         View open positions
     doctor            Full system diagnostic
     config            View/edit config
+    uninstall         Remove Aethera completely
 
   DAEMON
     daemon start      Background daemon (no TUI)

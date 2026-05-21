@@ -1,0 +1,27 @@
+{
+  "name": "aethera-hivemind-hub",
+  "version": "2.0.0",
+  "description": "Hivemind hub server untuk Aethera v2 — shared signals, lessons, weights",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/hub.ts",
+    "start": "node dist/hub.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "@hono/node-server": "^1.13.0",
+    "ws": "^8.18.0",
+    "zod": "^3.24.0",
+    "picocolors": "^1.1.0",
+    "better-sqlite3": "^11.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "@types/better-sqlite3": "^7.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0"
+  }
+}

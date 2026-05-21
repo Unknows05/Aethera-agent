@@ -1,0 +1,44 @@
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+
+const ALGORITHM = "aes-256-gcm";
+const KEY_LENGTH = 32;
+const IV_LENGTH = 16;
+const TAG_LENGTH = 16;
+const SALT = "aethera-v2-key-salt";
+
+function deriveKey(password: string): Buffer {
+  return scryptSync(password, SALT, KEY_LENGTH);
+}
+
+export function encrypt(plaintext: string, password: string): string {
+  const key = deriveKey(password);
+  const iv = randomBytes(IV_LENGTH);
+  const cipher = createCipheriv(ALGORITHM, key, iv);
+
+  let encrypted = cipher.update(plaintext, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  const tag = cipher.getAuthTag().toString("hex");
+
+  return `${iv.toString("hex")}:${tag}:${encrypted}`;
+}
+
+export function decrypt(ciphertext: string, password: string): string {
+  const key = deriveKey(password);
+  const parts = ciphertext.split(":");
+  if (parts.length !== 3) throw new Error("Invalid encrypted format");
+
+  const iv = Buffer.from(parts[0], "hex");
+  const tag = Buffer.from(parts[1], "hex");
+  const encrypted = parts[2];
+
+  const decipher = createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(tag);
+
+  let decrypted = decipher.update(encrypted, "hex", "utf8");
+  decrypted += decipher.final("utf8");
+  return decrypted;
+}
+
+export function generateEncryptionKey(): string {
+  return randomBytes(32).toString("hex");
+}

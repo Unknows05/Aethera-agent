@@ -92,6 +92,7 @@ export function loadConfig(): Config {
 }
 
 export function saveConfig(cfg: Config): void {
+  if (!encKey) encKey = loadOrCreateEncKey();
   const configPath = getConfigPath();
 
   const serializable = JSON.parse(JSON.stringify(cfg)) as Record<string, unknown>;

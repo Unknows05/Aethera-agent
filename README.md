@@ -2,6 +2,8 @@
 
 AI-powered trading agent for Binance Futures Perpetual (USDT-M). Self-learning via LLM orchestrator, quant screening engine, and swarm intelligence network.
 
+[Website](https://aethera-s1.com) · [Documentation](https://aethera-s1.com/docs/) · [Features](https://aethera-s1.com/features)
+
 ## Prerequisites
 
 | Runtime | Minimum | Install |
@@ -31,11 +33,12 @@ The installer auto-detects Bun or Node.js, clones the repo, builds TypeScript, a
 ## Quick Start
 
 ```bash
-aethera init       # Setup wizard: Binance API, LLM key, config
-aethera start      # Launch API server + TUI
-aethera daemon start  # Background daemon (no TUI)
-aethera doctor     # Full system diagnostic
-aethera --help     # All commands
+aethera init           # Setup wizard: Binance API, LLM key, config
+aethera start          # Launch trading (hunter + healer cycles)
+aethera daemon start   # Background daemon (no TUI)
+aethera status         # System status
+aethera doctor         # Full system diagnostic
+aethera --help         # All commands
 ```
 
 ## Architecture

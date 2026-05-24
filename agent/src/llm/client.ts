@@ -174,7 +174,17 @@ export class OpenRouterClient {
       });
       if (!res.ok) {
         const text = await res.text();
-        return { ok: false, latencyMs: Date.now() - start, error: `${res.status}: ${text}` };
+        let shortMsg = `${res.status}: request failed`;
+        try {
+          const j = JSON.parse(text) as Record<string, unknown>;
+          const err = j.error as Record<string, unknown> | undefined;
+          if (err?.message) shortMsg = `${res.status}: ${String(err.message).slice(0, 120)}`;
+          else if (err?.metadata) {
+            const raw = (err.metadata as Record<string, unknown>)?.raw as string | undefined;
+            if (raw) shortMsg = `${res.status}: ${raw.slice(0, 120)}`;
+          }
+        } catch { shortMsg = `${res.status}: ${text.slice(0, 120)}`; }
+        return { ok: false, latencyMs: Date.now() - start, error: shortMsg };
       }
       return { ok: true, latencyMs: Date.now() - start };
     } catch (e) {

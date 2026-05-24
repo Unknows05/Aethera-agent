@@ -196,38 +196,50 @@ export async function initWizard(): Promise<void> {
     { value: "__custom__", label: "Type custom model ID...", hint: "" },
   ];
 
-  const primaryModel = await p.select({
-    message: "Select Primary Model (Hunter/Orchestrator):",
-    options: modelChoices,
-  });
-
-  if (p.isCancel(primaryModel)) {
-    p.cancel("Setup dibatalkan.");
-    process.exit(0);
+  async function pickModel(label: string, choices: Array<{ value: string; label: string; hint?: string }>): Promise<string> {
+    while (true) {
+      const raw = await p.select({ message: label, options: choices });
+      if (p.isCancel(raw)) {
+        p.cancel("Setup dibatalkan.");
+        process.exit(0);
+      }
+      let model = raw as string;
+      if (model === "__custom__") {
+        const custom = await p.text({
+          message: "Enter model ID:",
+          validate: (val) => (!val ? "Model ID wajib diisi" : undefined),
+        });
+        if (p.isCancel(custom)) process.exit(0);
+        model = custom as string;
+      }
+      const s = p.spinner();
+      s.start(`Testing ${model}...`);
+      const test = orClient
+        ? await orClient.testModel(model)
+        : { ok: false as const, latencyMs: 0, error: "No OpenRouter connection" };
+      if (test.ok) {
+        s.stop(pc.green(`✓ ${model} responded in ${test.latencyMs}ms`));
+        return model;
+      }
+      s.stop(pc.yellow(`⚠ ${model}: ${test.error || "no response"}`));
+      const action = await p.select({
+        message: "What now?",
+        options: [
+          { value: "retry", label: "Try again" },
+          { value: "change", label: "Pick a different model" },
+          { value: "skip", label: "Skip test, continue anyway" },
+        ],
+      });
+      if (action === "retry") continue;
+      if (action === "skip") return model;
+      // "change" → loop back to model selection
+    }
   }
 
-  let selectedPrimary = primaryModel as string;
-  if (selectedPrimary === "__custom__") {
-    const custom = await p.text({
-      message: "Enter model ID:",
-      validate: (val) => (!val ? "Model ID wajib diisi" : undefined),
-    });
-    if (p.isCancel(custom)) process.exit(0);
-    selectedPrimary = custom as string;
-  }
+  const selectedPrimary = await pickModel("Select Primary Model (Hunter/Orchestrator):", modelChoices);
 
-  const s1 = p.spinner();
-  s1.start(`Testing ${selectedPrimary}...`);
-  const primaryTest = orClient ? await orClient.testModel(selectedPrimary) : { ok: false as const, latencyMs: 0, error: "No OpenRouter connection" };
-  if (primaryTest.ok) {
-    s1.stop(pc.green(`✓ ${selectedPrimary} responded in ${primaryTest.latencyMs}ms`));
-  } else {
-    s1.stop(pc.yellow(`⚠ ${selectedPrimary} test: ${primaryTest.error || "no response"}`));
-    const proceed = await p.confirm({ message: "Model test failed. Continue anyway?", initialValue: false });
-    if (p.isCancel(proceed) || !proceed) process.exit(0);
-  }
-
-  const healerModel = await p.select({
+  let selectedHealer: string;
+  const healerChoice = await p.select({
     message: "Select Model for Healer (fast, cheap):",
     options: [
       { value: "google/gemini-2.0-flash", label: "google/gemini-2.0-flash — FREE", hint: "Recommended" },
@@ -235,24 +247,17 @@ export async function initWizard(): Promise<void> {
       { value: "__same__", label: "Same as primary", hint: "" },
     ],
   });
-
-  if (p.isCancel(healerModel)) process.exit(0);
-
-  const selectedHealer = healerModel as string;
-  if (selectedHealer !== "__same__") {
-    const s2 = p.spinner();
-    s2.start(`Testing ${selectedHealer}...`);
-    const healerTest = orClient ? await orClient.testModel(selectedHealer) : { ok: false as const, latencyMs: 0, error: "No OpenRouter connection" };
-    if (healerTest.ok) {
-      s2.stop(pc.green(`✓ ${selectedHealer} responded in ${healerTest.latencyMs}ms`));
-    } else {
-      s2.stop(pc.yellow(`⚠ ${selectedHealer} test: ${healerTest.error || "no response"}`));
-      const proceed = await p.confirm({ message: "Healer model test failed. Continue anyway?", initialValue: false });
-      if (p.isCancel(proceed) || !proceed) process.exit(0);
-    }
+  if (p.isCancel(healerChoice)) process.exit(0);
+  if (healerChoice === "__same__") {
+    selectedHealer = selectedPrimary;
+  } else {
+    selectedHealer = await pickModel("", [
+      { value: healerChoice as string, label: healerChoice as string, hint: "" },
+    ]);
   }
 
-  const curatorModel = await p.select({
+  let selectedCurator: string;
+  const curatorChoice = await p.select({
     message: "Select Model for Curator/Learning (strong reasoning):",
     options: [
       { value: "anthropic/claude-sonnet", label: "anthropic/claude-sonnet — Best reasoning", hint: "$3.00/M" },
@@ -260,21 +265,13 @@ export async function initWizard(): Promise<void> {
       { value: "__same__", label: "Same as primary", hint: "" },
     ],
   });
-
-  if (p.isCancel(curatorModel)) process.exit(0);
-
-  const selectedCurator = curatorModel as string;
-  if (selectedCurator !== "__same__") {
-    const s3 = p.spinner();
-    s3.start(`Testing ${selectedCurator}...`);
-    const curatorTest = orClient ? await orClient.testModel(selectedCurator) : { ok: false as const, latencyMs: 0, error: "No OpenRouter connection" };
-    if (curatorTest.ok) {
-      s3.stop(pc.green(`✓ ${selectedCurator} responded in ${curatorTest.latencyMs}ms`));
-    } else {
-      s3.stop(pc.yellow(`⚠ ${selectedCurator} test: ${curatorTest.error || "no response"}`));
-      const proceed = await p.confirm({ message: "Curator model test failed. Continue anyway?", initialValue: false });
-      if (p.isCancel(proceed) || !proceed) process.exit(0);
-    }
+  if (p.isCancel(curatorChoice)) process.exit(0);
+  if (curatorChoice === "__same__") {
+    selectedCurator = selectedPrimary;
+  } else {
+    selectedCurator = await pickModel("", [
+      { value: curatorChoice as string, label: curatorChoice as string, hint: "" },
+    ]);
   }
 
   // ── Step 3: Growth Strategy ──
@@ -422,9 +419,9 @@ ${tierLines}
 
 ${pc.bold("Models:")}
   ${pc.cyan("Hunter")}      : ${selectedPrimary}
-  ${pc.cyan("Healer")}      : ${healerModel === "__same__" ? selectedPrimary : healerModel}
-  ${pc.cyan("Curator")}     : ${curatorModel === "__same__" ? selectedPrimary : curatorModel}
+  ${pc.cyan("Healer")}      : ${selectedHealer}
 
+  ${pc.cyan("Curator")}     : ${selectedCurator}
 ${pc.bold("Hivemind:")}
   ${hivemindEnabled ? `${pc.green("Enabled")} — ${hivemindHub}` : pc.dim("Disabled")}
   `;

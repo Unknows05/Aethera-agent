@@ -17,7 +17,11 @@ import type { AppContext } from "../api/server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export async function startServer(): Promise<void> {
+export interface StartOptions {
+  noTui?: boolean;
+}
+
+export async function startServer(options?: StartOptions): Promise<void> {
   const cfg = loadConfig();
 
   console.log("Starting Aethera v2...");
@@ -116,7 +120,7 @@ export async function startServer(): Promise<void> {
   const distCli = join(tuiDir, "dist", "cli.js");
   let tuiProcess: ReturnType<typeof spawn> | null = null;
 
-  if (existsSync(distCli) && process.stdout.isTTY) {
+  if (!options?.noTui && existsSync(distCli) && process.stdout.isTTY) {
     tuiProcess = spawn("node", [distCli], {
       cwd: tuiDir,
       stdio: "inherit",
@@ -138,7 +142,7 @@ export async function startServer(): Promise<void> {
     tuiProcess.on("error", () => {
       console.log("TUI failed to start — continuing without TUI");
     });
-  } else {
+  } else if (!options?.noTui) {
     if (!process.stdout.isTTY && existsSync(distCli)) {
       console.log("No TTY available — TUI skipped");
     } else if (!existsSync(distCli)) {

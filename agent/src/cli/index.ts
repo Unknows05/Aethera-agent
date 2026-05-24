@@ -154,9 +154,12 @@ async function main() {
 
 async function handleDaemon(sub: string | undefined) {
   switch (sub) {
-    case "start":
+    case "start": {
+      const { startServer } = await import("./start.js");
       console.log("Daemon starting...");
+      await startServer({ noTui: true });
       break;
+    }
     case "stop":
       console.log("Daemon stopping...");
       break;

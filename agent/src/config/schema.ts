@@ -46,7 +46,7 @@ const ScreeningConfigSchema = z.object({
 
 const HivemindConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  hub: z.string().default("ws://localhost:8000/api/hivemind/ws"),
+  hub: z.string().default("ws://localhost:8900/api/hivemind/ws"),
   apiKey: z.string().default(""),
   username: z.string().optional(),
 });
@@ -59,7 +59,7 @@ export const ConfigSchema = z.object({
   screening: ScreeningConfigSchema.optional().default({}),
   hivemind: HivemindConfigSchema.optional().default({
     enabled: false,
-    hub: "ws://localhost:8000/api/hivemind/ws",
+    hub: "ws://localhost:8900/api/hivemind/ws",
     apiKey: "",
   }),
 });

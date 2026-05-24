@@ -37,7 +37,7 @@ interface RiskState {
   dailyLossPct: number;
 }
 
-interface Lesson {
+export interface Lesson {
   rule: string;
   tags: string[];
   outcome: string;

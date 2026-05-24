@@ -49,11 +49,19 @@ export default function App({ baseUrl }: AppProps) {
   // Fetch initial data
   useEffect(() => {
     fetch(`${baseUrl}/api/status`)
-      .then((r) => r.json())
-      .then((d) => {
-        setStatus((s) => ({ ...s, ok: true, mode: "LIVE", balance: d.balance, equity: d.equity, openPositions: d.openPositions, positions: d.positions }));
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+        setStatus((s) => ({
+          ...s, ok: true, mode: "LIVE",
+          balance: d.balance ?? null, equity: d.equity ?? null,
+          openPositions: d.openPositions ?? 0, positions: d.positions ?? [],
+        }));
       })
-      .catch(() => addMessage("system", "API not reachable — waiting for connection"));
+      .catch((e) => {
+        addMessage("system", `Status API error: ${e.message}`);
+        setStatus((s) => ({ ...s, ok: false, mode: "ERROR", balance: null, equity: null }));
+      });
 
     fetch(`${baseUrl}/api/signals`)
       .then((r) => r.json())
@@ -141,8 +149,9 @@ export default function App({ baseUrl }: AppProps) {
         case "/status": {
           try {
             const r = await fetch(`${baseUrl}/api/status`);
+            if (!r.ok) { addMessage("system", `Status API: HTTP ${r.status}`); break; }
             const d = await r.json();
-            addMessage("system", `Equity: $${d.equity?.toFixed(2)} | Positions: ${d.openPositions} | Mode: ${d.mode || "LIVE"}`);
+            addMessage("system", `Equity: $${(d.equity ?? 0).toFixed(2)} | Positions: ${d.openPositions ?? 0} | Mode: LIVE`);
           } catch { addMessage("system", "Failed to fetch status"); }
           break;
         }
@@ -173,6 +182,7 @@ export default function App({ baseUrl }: AppProps) {
         case "/positions": {
           try {
             const r = await fetch(`${baseUrl}/api/status`);
+            if (!r.ok) { addMessage("system", `Status API: HTTP ${r.status}`); break; }
             const d = await r.json();
             if (d.positions?.length > 0) {
               d.positions.forEach((p: { symbol: string; side: string; size: number; entryPrice: number; pnl: number }) => {
@@ -187,12 +197,15 @@ export default function App({ baseUrl }: AppProps) {
         case "/health": {
           try {
             const r = await fetch(`${baseUrl}/api/health`);
+            if (!r.ok) { addMessage("system", `Health API: HTTP ${r.status}`); break; }
             const d = await r.json();
             addMessage("system", `Health: ${d.status} | Uptime: ${Math.floor(d.uptime / 1000)}s`);
           } catch { addMessage("system", "API unreachable"); }
           break;
         }
         case "/clear":
+        case "clear":
+        case "cls":
           setMessages([]);
           break;
         default: {

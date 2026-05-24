@@ -70,11 +70,40 @@ export async function startServer(): Promise<void> {
     wsClients,
   };
 
+  // Hivemind client — init BEFORE orchestrator so cycles can pull data
+  let hc: HivemindClient | null = null;
+  const hivemindCfg = cfg.hivemind;
+  if (hivemindCfg?.enabled && hivemindCfg.apiKey) {
+    hc = new HivemindClient({
+      enabled: true,
+      hub: hivemindCfg.hub,
+      apiKey: hivemindCfg.apiKey,
+      username: hivemindCfg.username || `agent_${Math.random().toString(36).slice(2, 8)}`,
+    });
+
+    hc.on((event) => {
+      if (event.type === "signal_update") {
+        const aggregated = event.aggregated as Array<{ symbol: string; longs: number; shorts: number; avgConfidence: number }>;
+        if (aggregated?.length) {
+          console.log(`  Hivemind: ${aggregated.length} aggregated signals`);
+        }
+      } else if (event.type === "lesson_broadcast") {
+        console.log(`  Hivemind: lesson from ${event.username as string} — ${event.summary as string}`);
+      }
+    });
+
+    hc.connect().catch(() => {});
+    console.log(`  Hivemind : ${hivemindCfg.hub}`);
+  } else {
+    console.log(`  Hivemind : disabled`);
+  }
+
   const orchestrator: OrchestratorConfig = {
     binance,
     openrouter: orClient,
     appConfig: cfg,
     tradeHandler,
+    hivemind: hc,
   };
 
   const startEquity = balance || 0;
@@ -107,34 +136,6 @@ export async function startServer(): Promise<void> {
     } else if (!existsSync(distCli)) {
       console.log("TUI not built — run 'cd tui && npm run build' to build");
     }
-  }
-
-  // Hivemind client
-  let hc: HivemindClient | null = null;
-  const hivemindCfg = cfg.hivemind;
-  if (hivemindCfg?.enabled && hivemindCfg.apiKey) {
-    hc = new HivemindClient({
-      enabled: true,
-      hub: hivemindCfg.hub,
-      apiKey: hivemindCfg.apiKey,
-      username: hivemindCfg.username || `agent_${Math.random().toString(36).slice(2, 8)}`,
-    });
-
-    hc.on((event) => {
-      if (event.type === "signal_update") {
-        const aggregated = event.aggregated as Array<{ symbol: string; longs: number; shorts: number; avgConfidence: number }>;
-        if (aggregated?.length) {
-          console.log(`  Hivemind: ${aggregated.length} aggregated signals`);
-        }
-      } else if (event.type === "lesson_broadcast") {
-        console.log(`  Hivemind: lesson from ${event.username as string} — ${event.summary as string}`);
-      }
-    });
-
-    hc.connect().catch(() => {});
-    console.log(`  Hivemind : ${hivemindCfg.hub}`);
-  } else {
-    console.log(`  Hivemind : disabled`);
   }
 
   // ================================================================

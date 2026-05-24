@@ -1,5 +1,23 @@
 import type { HivemindConfig, HivemindStatus, AggregatedSignal, HivemindEvent } from "./types.js";
 
+interface SharedLesson {
+  id: string;
+  agentId: string;
+  username?: string;
+  lessonJson: string;
+  tags: string;
+  win: number;
+  timestamp: string;
+}
+
+interface ParsedLesson {
+  rule: string;
+  tags: string[];
+  outcome: string;
+  confidence: number;
+  pinned: boolean;
+}
+
 type EventHandler = (event: HivemindEvent) => void;
 
 export class HivemindClient {
@@ -158,6 +176,74 @@ export class HivemindClient {
 
   publishTradeResult(win: boolean, pnl: number): void {
     this.send({ type: "trade_result", win, pnl });
+  }
+
+  // ============================================================
+  // PULL data from hub — dipanggil orchestrator tiap cycle
+  // ============================================================
+
+  async fetchSharedLessons(limit = 20): Promise<ParsedLesson[]> {
+    if (!this.config.enabled) return [];
+    try {
+      const httpUrl = this.config.hub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
+      const res = await fetch(`${httpUrl}/api/hivemind/lessons/list?limit=${limit}`);
+      if (!res.ok) return [];
+      const data = await res.json() as { lessons: SharedLesson[] };
+      return (data.lessons || []).map((l) => {
+        let rule = l.lessonJson;
+        try {
+          const parsed = JSON.parse(l.lessonJson);
+          rule = parsed.pattern || parsed.rule || parsed.summary || l.lessonJson;
+        } catch { /* use raw string */ }
+        return {
+          rule: typeof rule === "string" ? rule.slice(0, 500) : String(rule).slice(0, 500),
+          tags: l.tags ? l.tags.split(",").map((t) => t.trim()).filter(Boolean) : [],
+          outcome: l.win ? "win" : "loss",
+          confidence: 70,
+          pinned: false,
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  async fetchAggregatedSignals(minVotes = 2): Promise<AggregatedSignal[]> {
+    if (!this.config.enabled) return [];
+    try {
+      const httpUrl = this.config.hub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
+      const res = await fetch(`${httpUrl}/api/hivemind/signal/aggregated?min=${minVotes}`);
+      if (!res.ok) return [];
+      const data = await res.json() as { signals: AggregatedSignal[] };
+      return data.signals || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async fetchLeaderboard(limit = 10): Promise<Array<{ username: string; wins: number; totalPnl: number; wr: number }>> {
+    if (!this.config.enabled) return [];
+    try {
+      const httpUrl = this.config.hub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
+      const res = await fetch(`${httpUrl}/api/hivemind/stats/leaderboard?limit=${limit}`);
+      if (!res.ok) return [];
+      const data = await res.json() as { leaderboard: Array<{ username: string; wins: number; totalPnl: number; wr: number }> };
+      return data.leaderboard || [];
+    } catch {
+      return [];
+    }
+  }
+
+  async fetchNetworkStats(): Promise<{ totalAgents: number; onlineNow: number; totalLessons: number } | null> {
+    if (!this.config.enabled) return null;
+    try {
+      const httpUrl = this.config.hub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
+      const res = await fetch(`${httpUrl}/api/hivemind/stats/network`);
+      if (!res.ok) return null;
+      return await res.json() as { totalAgents: number; onlineNow: number; totalLessons: number };
+    } catch {
+      return null;
+    }
   }
 
   disconnect(): void {

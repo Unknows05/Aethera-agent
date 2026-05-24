@@ -349,8 +349,60 @@ export async function initWizard(): Promise<void> {
   const tiers = generateTiers(balance, targetEquityNum, riskProfile as string);
   const llmCanRefuse = true;
 
+  // ── Step 4: Hivemind ──
+  p.log.step(pc.bold("Step 4/5: Hivemind Network"));
+
+  const enableHivemind = await p.confirm({
+    message: "Enable Hivemind? (share & learn from other agents)",
+    initialValue: false,
+  });
+
+  let hivemindEnabled = false;
+  let hivemindHub = "ws://localhost:8900/api/hivemind/ws";
+  let hivemindApiKey = "";
+  let hivemindUsername = "";
+
+  if (p.isCancel(enableHivemind)) process.exit(0);
+
+  if (enableHivemind) {
+    hivemindEnabled = true;
+    hivemindApiKey = `ak_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    hivemindUsername = `agent_${Math.random().toString(36).slice(2, 8)}`;
+
+    const hubInput = await p.text({
+      message: "Hub URL:",
+      initialValue: hivemindHub,
+      validate: (val) => (!val ? "URL wajib diisi" : undefined),
+    });
+    if (p.isCancel(hubInput)) process.exit(0);
+    hivemindHub = (hubInput as string).trim();
+
+    p.log.info(`  API Key  : ${pc.dim(hivemindApiKey)}`);
+    p.log.info(`  Username : ${pc.cyan(hivemindUsername)}`);
+
+    // Test register to hub
+    const s4 = p.spinner();
+    s4.start("Registering agent to hivemind hub...");
+    try {
+      const httpUrl = hivemindHub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
+      const res = await fetch(`${httpUrl}/api/hivemind/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: hivemindUsername, apiKey: hivemindApiKey }),
+      });
+      const data = await res.json() as { ok: boolean };
+      if (data.ok) {
+        s4.stop(pc.green("✓ Registered to hivemind hub"));
+      } else {
+        s4.stop(pc.yellow("⚠ Could not register — will retry on connect"));
+      }
+    } catch {
+      s4.stop(pc.yellow("⚠ Hub unreachable — will retry on connect"));
+    }
+  }
+
   // ── Summary ──
-  p.log.step(pc.bold("Step 4/4: Summary & Save"));
+  p.log.step(pc.bold("Step 5/5: Summary & Save"));
 
   const tierLines = tiers.map((t) =>
     `  $${t.min} → $${t.max}   risk ${(t.maxRisk * 100).toFixed(0)}%  daily ${(t.dailyTarget * 100).toFixed(1)}%  max ${t.maxLeverage}x  max ${t.maxTrades}/day`
@@ -372,6 +424,9 @@ ${pc.bold("Models:")}
   ${pc.cyan("Hunter")}      : ${selectedPrimary}
   ${pc.cyan("Healer")}      : ${healerModel === "__same__" ? selectedPrimary : healerModel}
   ${pc.cyan("Curator")}     : ${curatorModel === "__same__" ? selectedPrimary : curatorModel}
+
+${pc.bold("Hivemind:")}
+  ${hivemindEnabled ? `${pc.green("Enabled")} — ${hivemindHub}` : pc.dim("Disabled")}
   `;
 
   p.log.info(summary);
@@ -406,6 +461,12 @@ ${pc.bold("Models:")}
       riskProfile: riskProfile as "aggressive" | "moderate" | "conservative",
       llmCanRefuse,
       equityTiers: tiers,
+    },
+    hivemind: {
+      enabled: hivemindEnabled,
+      hub: hivemindHub,
+      apiKey: hivemindApiKey,
+      username: hivemindUsername,
     },
   };
 

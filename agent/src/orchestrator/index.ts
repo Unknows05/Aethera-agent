@@ -1,7 +1,8 @@
 import { BinanceClient } from "../exchange/binance.js";
 import { OpenRouterClient } from "../llm/client.js";
 import type { Config } from "../config/schema.js";
-import { buildGoalState, buildContext, formatContextForLLM, type Context } from "./context.js";
+import type { HivemindClient } from "../hivemind/client.js";
+import { buildGoalState, buildContext, formatContextForLLM, type Context, type Lesson } from "./context.js";
 import { TOOL_DEFINITIONS, type ToolCall, type ToolResult } from "./tools.js";
 import { TradeHandler } from "./tool-handlers/trade.js";
 
@@ -12,6 +13,7 @@ export interface OrchestratorConfig {
   openrouter: OpenRouterClient;
   appConfig: Config;
   tradeHandler: TradeHandler;
+  hivemind: HivemindClient | null;
 }
 
 export interface CycleResult {
@@ -172,6 +174,7 @@ async function gatherContext(
   config: Config,
   daysElapsed: number,
   startEquity: number,
+  hivemind: HivemindClient | null = null,
 ): Promise<Context> {
   let balance = 0;
   let positions = 0;
@@ -196,6 +199,15 @@ async function gatherContext(
   }
 
   const goal = buildGoalState(balance, startEquity, config, daysElapsed);
+
+  // Pull shared lessons from hivemind hub
+  let fetchedLessons: Lesson[] = [];
+  if (hivemind) {
+    try {
+      const shared = await hivemind.fetchSharedLessons(10);
+      fetchedLessons = shared as import("./context.js").Lesson[];
+    } catch { /* non-blocking */ }
+  }
 
   return buildContext({
     market: {
@@ -222,7 +234,7 @@ async function gatherContext(
       drawdown: 0,
       dailyLossPct: 0,
     },
-    lessons: [],
+    lessons: fetchedLessons,
     goal,
   });
 }
@@ -239,6 +251,7 @@ export async function runHunterCycle(
     orchestrator.appConfig,
     daysElapsed,
     startEquity,
+    orchestrator.hivemind,
   );
 
   const prompt = formatContextForLLM(ctx);
@@ -284,6 +297,7 @@ export async function runHealerCycle(
     orchestrator.appConfig,
     daysElapsed,
     startEquity,
+    orchestrator.hivemind,
   );
 
   const positions = await orchestrator.binance.getPositionRisk();

@@ -63,6 +63,14 @@ export interface ScoredCoin {
   tp: number;
   reasons: string[];
   microstructure?: MicrostructureResult;
+  fundingRate?: number;
+  openInterest?: number;
+  oiChange?: number;
+  takerBuyRatio?: number;
+  topLongShortRatio?: number;
+  globalLongShortRatio?: number;
+  depthImbalance?: number;
+  volume24h?: number;
 }
 
 export interface MicrostructureResult {

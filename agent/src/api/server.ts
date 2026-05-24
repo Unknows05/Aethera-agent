@@ -6,6 +6,7 @@ import type { Config } from "../config/schema.js";
 import type { Scanner } from "../screening/index.js";
 import type { TradeHandler } from "../orchestrator/tool-handlers/trade.js";
 import { statusRoutes } from "./routes/status.js";
+import { stateRoutes } from "./routes/state.js";
 import { signalsRoutes } from "./routes/signals.js";
 import { learningRoutes } from "./routes/learning.js";
 
@@ -28,6 +29,7 @@ export function createServer(deps: AppContext): { app: Hono<{ Variables: Variabl
   });
 
   app.route("/api/status", statusRoutes);
+  app.route("/api/state", stateRoutes);
   app.route("/api/signals", signalsRoutes);
   app.route("/api/learning", learningRoutes);
 

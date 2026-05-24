@@ -147,6 +147,10 @@ export class BinanceClient {
     return publicRequest("GET", "/fapi/v1/premiumIndex", { symbol });
   }
 
+  async getPremiumIndices(): Promise<Array<{ symbol: string; markPrice: string; indexPrice: string; lastFundingRate: string; nextFundingTime: number }>> {
+    return publicRequest("GET", "/fapi/v1/premiumIndex");
+  }
+
   async getFundingRate(symbol: string, limit = 100): Promise<Array<{ fundingRate: string; fundingTime: number }>> {
     return publicRequest("GET", "/fapi/v1/fundingRate", { symbol, limit });
   }

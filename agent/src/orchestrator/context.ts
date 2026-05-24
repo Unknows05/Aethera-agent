@@ -7,6 +7,8 @@ interface MarketState {
   fundingAvg: number;
   topGainers: string[];
   topLosers: string[];
+  topOpenInterest: Array<{ symbol: string; oi: number }>;
+  lsDivergences: Array<{ symbol: string; topRatio: number; globalRatio: number; divergence: number }>;
 }
 
 interface AccountState {
@@ -27,6 +29,12 @@ export interface ScreeningResult {
   reasons: string[];
   sl: number;
   tp: number;
+  fundingRate?: number;
+  openInterest?: number;
+  takerBuyRatio?: number;
+  globalLongShortRatio?: number;
+  depthImbalance?: number;
+  volume24h?: number;
 }
 
 interface RiskState {
@@ -149,9 +157,25 @@ export function formatContextForLLM(ctx: Context): string {
     : ctx.goal.urgency === "ahead" ? "🟢"
     : "🔵";
 
+  const fundingSection = ctx.market.fundingAvg !== 0
+    ? `Funding Avg: ${(ctx.market.fundingAvg * 100).toFixed(4)}%`
+    : "";
+
+  const oiSection = ctx.market.topOpenInterest.length > 0
+    ? `Top OI: ${ctx.market.topOpenInterest.slice(0, 5).map(o => `${o.symbol} $${(o.oi / 1e6).toFixed(0)}M`).join(", ")}`
+    : "";
+
+  const lsDivergenceSection = ctx.market.lsDivergences.length > 0
+    ? `L/S Divergence: ${ctx.market.lsDivergences.slice(0, 3).map(d =>
+        `${d.symbol} top=${d.topRatio.toFixed(2)} global=${d.globalRatio.toFixed(2)} (div=${d.divergence > 0 ? "+" : ""}${(d.divergence * 100).toFixed(0)}%)`
+      ).join(" | ")}`
+    : "";
+
+  const extraLines = [fundingSection, oiSection, lsDivergenceSection].filter(Boolean).join("\n");
+
   return `=== MARKET STATE ===
 BTC Regime: ${ctx.market.btcRegime} | Price: $${ctx.market.btcPrice.toLocaleString()} | 24h: ${ctx.market.btcChange24h > 0 ? "+" : ""}${ctx.market.btcChange24h}%
-Funding Avg: ${(ctx.market.fundingAvg * 100).toFixed(4)}%
+${extraLines}
 Top Gainers: ${ctx.market.topGainers.slice(0, 3).join(", ")}
 Top Losers: ${ctx.market.topLosers.slice(0, 3).join(", ")}
 
@@ -173,9 +197,12 @@ Urgency: ${ctx.goal.urgency.toUpperCase()}
 Risk Tier: max ${(ctx.goal.riskTier.maxRisk * 100).toFixed(0)}% risk, ${ctx.goal.riskTier.maxLeverage}x lev, ${ctx.goal.riskTier.maxTrades} trades/day
 
 === TOP SIGNALS ===
-${ctx.screening.length === 0 ? "No signals available" : ctx.screening.slice(0, 5).map((s, i) =>
-  `${i + 1}. ${s.symbol} ${s.direction === "LONG" ? "🟢" : "🔴"} Score: ${s.score} | Conf: ${s.confidence} | Regime: ${s.regime}${s.reasons.length ? ` | ${s.reasons.slice(0, 2).join(", ")}` : ""}`
-).join("\n")}
+${ctx.screening.length === 0 ? "No signals available" : ctx.screening.slice(0, 5).map((s, i) => {
+  const enrich = s.fundingRate !== undefined
+    ? ` | Funding: ${(s.fundingRate * 100).toFixed(4)}% | Taker: ${s.takerBuyRatio?.toFixed(2)} | OI: ${s.openInterest ? `$${(s.openInterest / 1e6).toFixed(0)}M` : "N/A"}`
+    : "";
+  return `${i + 1}. ${s.symbol} ${s.direction === "LONG" ? "🟢" : "🔴"} Score: ${s.score} | Conf: ${s.confidence} | Regime: ${s.regime}${s.reasons.length ? ` | ${s.reasons.slice(0, 2).join(", ")}` : ""}${enrich}`;
+}).join("\n")}
 
 === LESSONS ===
 ${ctx.lessons.length === 0 ? "No lessons yet" : ctx.lessons.slice(0, 5).map((l) =>

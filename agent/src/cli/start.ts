@@ -13,6 +13,7 @@ import { createServer, broadcastUpdate } from "../api/server.js";
 import { runHunterCycle, runHealerCycle } from "../orchestrator/index.js";
 import type { OrchestratorConfig } from "../orchestrator/index.js";
 import { analyzeTurn } from "../learning/post-turn-review.js";
+import { appendDecision } from "../learning/decision-log.js";
 import type { AppContext } from "../api/server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -160,8 +161,24 @@ export async function startServer(options?: StartOptions): Promise<void> {
   console.log(`  Healer   : every ${healerMs / 1000}s`);
   console.log(`Ready on :${port}`);
 
-  // Helper: push cycle data ke hivemind hub
-  function pushToHivemind(result: import("../orchestrator/index.js").CycleResult): void {
+  // Helper: push cycle data ke hivemind hub + decision log
+  function afterCycle(result: import("../orchestrator/index.js").CycleResult): void {
+    // Decision log
+    for (const d of result.decisions) {
+      const action = (d.data as Record<string, unknown>)?.action as string || "unknown";
+      appendDecision({
+        timestamp: new Date().toISOString(),
+        agent: result.agent,
+        type: action as any,
+        symbol: (d.data as Record<string, unknown>)?.symbol as string,
+        success: d.success,
+        summary: d.success
+          ? `${action} ${(d.data as Record<string, unknown>)?.symbol || ""}`
+          : `FAILED ${action}: ${d.error || "unknown error"}`,
+        error: d.error,
+      });
+    }
+
     if (!hc || !hc.status.connected) return;
 
     // Push screening signals
@@ -181,7 +198,6 @@ export async function startServer(options?: StartOptions): Promise<void> {
         hc.publishTradeResult(d.success, 0);
       }
       if (action === "close_position" || action === "partial_close") {
-        // PnL kalo available
         const pnl = (d.data as Record<string, unknown>)?.pnl as number | undefined;
         hc.publishTradeResult(d.success, pnl || 0);
       }
@@ -205,7 +221,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
     try {
       const result = await runHunterCycle(orchestrator, startEquity, getDaysElapsed());
       broadcastUpdate({ type: "cycle", agent: "hunter", summary: result.llmResponse }, deps);
-      pushToHivemind(result);
+      afterCycle(result);
       for (const decision of result.decisions) {
         const review = analyzeTurn({
           action: (decision.data as Record<string, unknown>)?.action as string || "",
@@ -227,7 +243,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
       const result = await runHealerCycle(orchestrator, startEquity, getDaysElapsed());
       if (result.decisions.length > 0) {
         broadcastUpdate({ type: "cycle", agent: "healer", summary: result.llmResponse }, deps);
-        pushToHivemind(result);
+        afterCycle(result);
         for (const decision of result.decisions) {
           const review = analyzeTurn({
             action: (decision.data as Record<string, unknown>)?.action as string || "",
@@ -250,7 +266,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
     try {
       const result = await runHunterCycle(orchestrator, startEquity, getDaysElapsed());
       broadcastUpdate({ type: "cycle", agent: "hunter", summary: result.llmResponse }, deps);
-      pushToHivemind(result);
+      afterCycle(result);
       console.log(`  └─ ${result.decisions.length} decisions (${result.durationMs}ms)`);
     } catch (e) {
       console.error(`[${new Date().toISOString()}] Initial hunter error:`, e);

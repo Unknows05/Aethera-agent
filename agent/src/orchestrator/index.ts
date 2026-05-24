@@ -7,6 +7,7 @@ import type { HivemindClient } from "../hivemind/client.js";
 import { buildGoalState, buildContext, formatContextForLLM, type Context, type Lesson, type ScreeningResult } from "./context.js";
 import { TOOL_DEFINITIONS, type ToolCall, type ToolResult } from "./tools.js";
 import { TradeHandler } from "./tool-handlers/trade.js";
+import { getLessonsForPrompt } from "../learning/lessons.js";
 
 export type AgentType = "hunter" | "healer";
 
@@ -185,12 +186,16 @@ async function gatherContext(
   let dailyPnl = 0;
   let btcPrice = 0;
   let btcChange24h = 0;
+  let fundingAvg = 0;
+  const topOpenInterest: Array<{ symbol: string; oi: number }> = [];
+  const lsDivergences: Array<{ symbol: string; topRatio: number; globalRatio: number; divergence: number }> = [];
   let screening: ScreeningResult[] = [];
+  const errors: string[] = [];
 
   try {
     balance = await binance.getBalance();
-  } catch {
-    /* use defaults */
+  } catch (e) {
+    errors.push(`balance: ${e instanceof Error ? e.message : e}`);
   }
 
   try {
@@ -201,20 +206,40 @@ async function gatherContext(
           .filter((p) => Number(p.positionAmt) !== 0)
           .reduce((sum, p) => sum + Number(p.unrealizedProfit), 0)
       : 0;
-  } catch {
-    /* use defaults */
+  } catch (e) {
+    errors.push(`positions: ${e instanceof Error ? e.message : e}`);
   }
 
-  // Run scanner — ini yg bikin LLM liat signal real
+  // BTC price + funding dari premiumIndex
+  try {
+    const premiumIndices = await binance.getPremiumIndices();
+    const btc = premiumIndices.find((p) => p.symbol === "BTCUSDT");
+    if (btc) {
+      btcPrice = Number(btc.markPrice);
+      btcChange24h = 0; // premiumIndex gak punya change — pake ticker
+    }
+    // funding avg dari semua perpetual
+    const fundingRates = premiumIndices.map((p) => Number(p.lastFundingRate)).filter((f) => f !== 0);
+    if (fundingRates.length > 0) {
+      fundingAvg = fundingRates.reduce((s, f) => s + f, 0) / fundingRates.length;
+    }
+  } catch (e) {
+    errors.push(`premiumIndex: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // BTC 24h change dari ticker
   try {
     const tickers = await binance.getTickers();
-    const btc = tickers.find((t) => t.symbol === "BTCUSDT");
-    if (btc) {
-      btcPrice = Number(btc.lastPrice);
-      btcChange24h = Number(btc.priceChangePercent);
+    const btcTicker = tickers.find((t) => t.symbol === "BTCUSDT");
+    if (btcTicker) {
+      btcPrice = btcPrice || Number(btcTicker.lastPrice);
+      btcChange24h = Number(btcTicker.priceChangePercent);
     }
-  } catch { /* non-blocking */ }
+  } catch (e) {
+    errors.push(`ticker: ${e instanceof Error ? e.message : e}`);
+  }
 
+  // Scanner
   try {
     const scanResult = await scanner.scan();
     screening = scanResult.coins
@@ -229,18 +254,59 @@ async function gatherContext(
         reasons: c.reasons,
         sl: c.sl,
         tp: c.tp,
+        fundingRate: c.fundingRate,
+        openInterest: c.openInterest,
+        takerBuyRatio: c.takerBuyRatio,
+        globalLongShortRatio: c.globalLongShortRatio,
+        depthImbalance: c.depthImbalance,
+        volume24h: c.volume24h,
       }));
+
+    // OI top dari hasil enrichment
+    const withOI = scanResult.coins.filter((c) => c.openInterest && c.openInterest > 0);
+    withOI.sort((a, b) => (b.openInterest || 0) - (a.openInterest || 0));
+    topOpenInterest.push(...withOI.slice(0, 10).map((c) => ({ symbol: c.symbol, oi: c.openInterest || 0 })));
+
+    // L/S divergence: bandingin taker ratio vs global ratio
+    for (const c of scanResult.coins.slice(0, 20)) {
+      if (c.takerBuyRatio && c.takerBuyRatio > 0 && c.globalLongShortRatio && c.globalLongShortRatio > 0) {
+        const divergence = c.takerBuyRatio - c.globalLongShortRatio;
+        if (Math.abs(divergence) > 0.3) {
+          lsDivergences.push({ symbol: c.symbol, topRatio: c.takerBuyRatio, globalRatio: c.globalLongShortRatio, divergence });
+        }
+      }
+    }
   } catch (e) {
-    console.error("Scanner error:", e instanceof Error ? e.message : e);
+    errors.push(`scanner: ${e instanceof Error ? e.message : e}`);
   }
 
-  // Pull shared lessons from hivemind hub
+  // Local lessons
+  const localLessons = getLessonsForPrompt({ agentType: "hunter", maxLessons: 10 });
+
+  // Shared lessons from hivemind hub
   let fetchedLessons: Lesson[] = [];
   if (hivemind) {
     try {
       const shared = await hivemind.fetchSharedLessons(10);
       fetchedLessons = shared as Lesson[];
-    } catch { /* non-blocking */ }
+    } catch (e) {
+      errors.push(`hivemind: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  // Merge lessons: local dulu baru shared
+  const allLessons: Lesson[] = [...fetchedLessons];
+  if (localLessons) {
+    const lines = localLessons.split("\n");
+    for (const line of lines) {
+      allLessons.push({
+        rule: line.replace(/^[📌 ]*/, ""),
+        tags: [],
+        outcome: "manual",
+        confidence: 50,
+        pinned: false,
+      });
+    }
   }
 
   const goal = buildGoalState(balance, startEquity, config, daysElapsed);
@@ -250,9 +316,11 @@ async function gatherContext(
       btcRegime: btcChange24h > 2 ? "bullish" : btcChange24h < -2 ? "bearish" : "neutral",
       btcPrice,
       btcChange24h,
-      fundingAvg: 0,
+      fundingAvg,
       topGainers: screening.filter((s) => s.direction === "LONG").slice(0, 3).map((s) => s.symbol),
       topLosers: screening.filter((s) => s.direction === "SHORT").slice(0, 3).map((s) => s.symbol),
+      topOpenInterest,
+      lsDivergences,
     },
     account: {
       balance,
@@ -270,7 +338,7 @@ async function gatherContext(
       drawdown: 0,
       dailyLossPct: 0,
     },
-    lessons: fetchedLessons,
+    lessons: allLessons,
     goal,
   });
 }

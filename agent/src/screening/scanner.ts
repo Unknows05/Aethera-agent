@@ -27,18 +27,21 @@ export class Scanner {
   private maxCoins: number;
   private prefilterMinVolume: number;
   private adxThreshold: number;
+  private enrichTopN: number;
 
   constructor(client: BinanceClient, config?: {
     timeframes?: Timeframe[];
     maxCoins?: number;
     prefilterMinVolume?: number;
     adxThreshold?: number;
+    enrichTopN?: number;
   }) {
     this.client = client;
-    this.timeframes = config?.timeframes ?? ["15m", "1h", "4h"];
-    this.maxCoins = config?.maxCoins ?? 500;
+    this.timeframes = config?.timeframes ?? ["15m", "1h"];
+    this.maxCoins = config?.maxCoins ?? 30;
     this.prefilterMinVolume = config?.prefilterMinVolume ?? 1_000_000;
     this.adxThreshold = config?.adxThreshold ?? 25;
+    this.enrichTopN = config?.enrichTopN ?? 15;
   }
 
   async scan(): Promise<ScanResult> {
@@ -49,7 +52,6 @@ export class Scanner {
     const totalScanned = allSymbols.length;
 
     // Layer 2: Prefilter by volume
-    const prefilterStart = Date.now();
     const tickers = await this.client.getTickers();
     const tickerMap = new Map(tickers.map((t) => [t.symbol, t]));
 
@@ -61,17 +63,17 @@ export class Scanner {
 
     const prefiltered = withVolume.length;
 
-    // Layer 3: Quick score (just 15m RSI + Volume) → keep top 80
-    const quickscored = withVolume.slice(0, 200);
-
-    // Layer 4: Full score — batch in parallel
-    const fullBatch = quickscored.slice(0, 80);
+    // Layer 3: Full score top 30 coins
+    const fullBatch = withVolume.slice(0, this.maxCoins);
     const fullscored = fullBatch.length;
 
     const scoredCoins = await this.fullScoreBatch(fullBatch);
 
+    // Layer 4: Enrich top N scored coins
+    const enriched = await this.addEnrichment(scoredCoins, tickerMap);
+
     // Layer 5: Apply session filter
-    const finalCoins = scoredCoins.map((coin) => {
+    const finalCoins = enriched.map((coin) => {
       if (coin.direction === "WAIT") return coin;
       const price = coin.sl < coin.tp ? coin.sl : coin.tp;
       const filtered = applySessionFilter(coin.score, coin.sl, coin.tp, price);
@@ -82,7 +84,7 @@ export class Scanner {
       coins: finalCoins,
       totalScanned,
       prefiltered,
-      quickscored: quickscored.length,
+      quickscored: fullBatch.length,
       fullscored,
       durationMs: Date.now() - startTime,
     };
@@ -115,7 +117,7 @@ export class Scanner {
           try {
             const tfData = await Promise.all(
               this.timeframes.map(async (tf) => {
-                const candles = await this.client.getKlines(symbol, tf, 200);
+                const candles = await this.client.getKlines(symbol, tf, 100);
                 return {
                   timeframe: tf,
                   candles: candles as Candle[],
@@ -123,8 +125,6 @@ export class Scanner {
               }),
             );
 
-            // Microstructure: only fetch if score will be near threshold
-            // We compute a quick score first to decide
             const quickCandles = tfData[0].candles;
             const quickIndicators = (await import("./indicators/index.js")).computeIndicators(quickCandles);
             const quickScore = (await import("./indicators/index.js")).computeRawScore(quickIndicators, quickCandles[quickCandles.length - 1].close);
@@ -152,5 +152,78 @@ export class Scanner {
       const bScore = b.direction === "LONG" ? b.score : b.direction === "SHORT" ? 100 - b.score : 0;
       return bScore - aScore;
     });
+  }
+
+  private async addEnrichment(
+    coins: ScoredCoin[],
+    tickerMap: Map<string, { lastPrice: string; quoteVolume: string; priceChangePercent: string }>,
+  ): Promise<ScoredCoin[]> {
+    if (coins.length === 0) return coins;
+
+    try {
+      const premiumIndices = await this.client.getPremiumIndices();
+      const piMap = new Map(premiumIndices.map((p) => [p.symbol, p]));
+
+      const topN = coins.slice(0, this.enrichTopN);
+      const enrichmentPromises = topN.map(async (coin) => {
+        const pi = piMap.get(coin.symbol);
+        const fundingRate = pi ? Number(pi.lastFundingRate) : 0;
+
+        let openInterest = 0;
+        let takerBuyRatio = 0;
+        let topLongShortRatio = 0;
+        let globalLongShortRatio = 0;
+        let depthImbalance = 0;
+
+        try {
+          const oi = await this.client.getOpenInterest(coin.symbol);
+          openInterest = Number(oi.openInterest);
+        } catch { /* non-critical */ }
+
+        try {
+          const taker = await this.client.getTakerVolume(coin.symbol, "5m", 1);
+          if (taker.length > 0) {
+            takerBuyRatio = Number(taker[0].buySellRatio);
+          }
+        } catch { /* non-critical */ }
+
+        try {
+          const ls = await this.client.getLongShortRatio(coin.symbol, "5m", 1);
+          if (ls.length > 0) {
+            globalLongShortRatio = Number(ls[0].longShortRatio);
+          }
+        } catch { /* non-critical */ }
+
+        try {
+          const depth = await this.client.getDepth(coin.symbol, 20);
+          const bidVol = depth.bids.reduce((s, b) => s + Number(b[0]) * Number(b[1]), 0);
+          const askVol = depth.asks.reduce((s, a) => s + Number(a[0]) * Number(a[1]), 0);
+          const total = bidVol + askVol;
+          if (total > 0) {
+            depthImbalance = (bidVol - askVol) / total;
+          }
+        } catch { /* non-critical */ }
+
+        const volume24h = tickerMap.get(coin.symbol) ? Number(tickerMap.get(coin.symbol)!.quoteVolume) : 0;
+
+        return {
+          ...coin,
+          fundingRate,
+          openInterest,
+          takerBuyRatio,
+          topLongShortRatio,
+          globalLongShortRatio,
+          depthImbalance,
+          volume24h,
+        };
+      });
+
+      const enrichedTop = await Promise.all(enrichmentPromises);
+      const untouched = coins.slice(this.enrichTopN);
+      return [...enrichedTop, ...untouched];
+    } catch (e) {
+      console.error("Enrichment failed:", e instanceof Error ? e.message : e);
+      return coins;
+    }
   }
 }

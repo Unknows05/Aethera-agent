@@ -149,18 +149,60 @@ export async function startServer(): Promise<void> {
   console.log(`  Healer   : every ${healerMs / 1000}s`);
   console.log(`Ready on :${port}`);
 
+  // Helper: push cycle data ke hivemind hub
+  function pushToHivemind(result: import("../orchestrator/index.js").CycleResult): void {
+    if (!hc || !hc.status.connected) return;
+
+    // Push screening signals
+    for (const signal of result.context.screening) {
+      hc.publishSignal(signal.symbol, signal.direction, signal.confidence);
+    }
+
+    // Push trade decisions + results
+    for (const d of result.decisions) {
+      const action = (d.data as Record<string, unknown>)?.action as string | undefined;
+      if (action === "open_long" || action === "open_short") {
+        const symbol = (d.data as Record<string, unknown>)?.symbol as string | undefined;
+        const confidence = (d.data as Record<string, unknown>)?.confidence as number | undefined;
+        if (symbol) {
+          hc.publishSignal(symbol, action === "open_long" ? "LONG" : "SHORT", confidence || 70);
+        }
+        hc.publishTradeResult(d.success, 0);
+      }
+      if (action === "close_position" || action === "partial_close") {
+        // PnL kalo available
+        const pnl = (d.data as Record<string, unknown>)?.pnl as number | undefined;
+        hc.publishTradeResult(d.success, pnl || 0);
+      }
+    }
+  }
+
+  // Helper: push lesson ke hivemind dari analyzeTurn
+  function pushLessonToHivemind(decision: import("../orchestrator/tools.js").ToolResult): void {
+    if (!hc || !hc.status.connected) return;
+    if (!decision.success && decision.error) {
+      hc.publishLesson(
+        { action: (decision.data as Record<string, unknown>)?.action as string, error: decision.error },
+        "failure",
+        false,
+      );
+    }
+  }
+
   const hunterInterval = setInterval(async () => {
     console.log(`[${new Date().toISOString()}] Hunter cycle...`);
     try {
       const result = await runHunterCycle(orchestrator, startEquity, getDaysElapsed());
       broadcastUpdate({ type: "cycle", agent: "hunter", summary: result.llmResponse }, deps);
+      pushToHivemind(result);
       for (const decision of result.decisions) {
-        analyzeTurn({
-          action: (decision.data?.action as string) || "",
-          symbol: decision.data?.symbol as string,
+        const review = analyzeTurn({
+          action: (decision.data as Record<string, unknown>)?.action as string || "",
+          symbol: (decision.data as Record<string, unknown>)?.symbol as string,
           success: decision.success,
           error: decision.error,
         });
+        if (review.lessonsExtracted > 0) pushLessonToHivemind(decision);
       }
       console.log(`  └─ ${result.decisions.length} decisions (${result.durationMs}ms)`);
     } catch (e) {
@@ -174,13 +216,15 @@ export async function startServer(): Promise<void> {
       const result = await runHealerCycle(orchestrator, startEquity, getDaysElapsed());
       if (result.decisions.length > 0) {
         broadcastUpdate({ type: "cycle", agent: "healer", summary: result.llmResponse }, deps);
+        pushToHivemind(result);
         for (const decision of result.decisions) {
-          analyzeTurn({
-            action: (decision.data?.action as string) || "",
-            symbol: decision.data?.symbol as string,
+          const review = analyzeTurn({
+            action: (decision.data as Record<string, unknown>)?.action as string || "",
+            symbol: (decision.data as Record<string, unknown>)?.symbol as string,
             success: decision.success,
             error: decision.error,
           });
+          if (review.lessonsExtracted > 0) pushLessonToHivemind(decision);
         }
       }
       console.log(`  └─ ${result.decisions.length} decisions (${result.durationMs}ms)`);
@@ -195,11 +239,14 @@ export async function startServer(): Promise<void> {
     try {
       const result = await runHunterCycle(orchestrator, startEquity, getDaysElapsed());
       broadcastUpdate({ type: "cycle", agent: "hunter", summary: result.llmResponse }, deps);
+      pushToHivemind(result);
       console.log(`  └─ ${result.decisions.length} decisions (${result.durationMs}ms)`);
     } catch (e) {
       console.error(`[${new Date().toISOString()}] Initial hunter error:`, e);
     }
   });
+
+
 
   // Graceful shutdown
   const cleanup = () => {

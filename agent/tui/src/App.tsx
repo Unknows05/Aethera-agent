@@ -112,7 +112,7 @@ export default function App({ baseUrl }: AppProps) {
         setTimeout(connect, 3000);
       };
 
-      ws.onerror = () => ws.close();
+      ws.onerror = () => { /* onclose fires automatically */ };
     };
 
     connect();

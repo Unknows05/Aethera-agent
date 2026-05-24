@@ -86,7 +86,7 @@ export async function startServer(): Promise<void> {
   const distCli = join(tuiDir, "dist", "cli.js");
   let tuiProcess: ReturnType<typeof spawn> | null = null;
 
-  if (existsSync(distCli)) {
+  if (existsSync(distCli) && process.stdout.isTTY) {
     tuiProcess = spawn("node", [distCli], {
       cwd: tuiDir,
       stdio: "inherit",
@@ -96,7 +96,7 @@ export async function startServer(): Promise<void> {
     tuiProcess.on("exit", (code) => {
       console.log(`TUI exited (code: ${code})`);
     });
-  } else {
+  } else if (!existsSync(distCli)) {
     console.log("TUI not built — run 'cd tui && npm run build' to build");
   }
 

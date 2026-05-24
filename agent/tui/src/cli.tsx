@@ -25,4 +25,9 @@ const cli = meow(
   },
 );
 
+if (!process.stdin.isTTY) {
+  console.log("TUI requires an interactive terminal — skipping");
+  process.exit(0);
+}
+
 render(<App baseUrl={cli.flags.baseUrl} />);

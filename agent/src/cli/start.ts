@@ -124,7 +124,14 @@ export async function startServer(): Promise<void> {
     });
 
     tuiProcess.on("exit", (code) => {
-      if (code !== 0) {
+      if (code === 0) {
+        // q → exit agent + balik ke shell
+        clearInterval(hunterInterval);
+        clearInterval(healerInterval);
+        if (hc) hc.disconnect();
+        process.exit(0);
+      } else {
+        // TUI crash → tetep jalan tanpa TUI
         console.log(`TUI exited unexpectedly (code: ${code}) — continuing without TUI`);
       }
     });

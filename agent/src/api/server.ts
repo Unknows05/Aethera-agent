@@ -41,7 +41,20 @@ export function createServer(deps: AppContext): { app: Hono<{ Variables: Variabl
     (info) => console.log(`API server running on :${info.port}`),
   ) as ServerType;
 
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`Port ${port} already in use — is another agent running?`);
+      console.error("Use a different PORT env or stop the existing agent first.");
+    } else {
+      console.error("Server error:", err.message);
+    }
+  });
+
   const wss = new WebSocketServer({ server: httpServer as unknown as import("node:http").Server });
+  wss.on("error", (err) => {
+    if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") return; // already logged by httpServer
+    console.error("WebSocket error:", err.message);
+  });
   wss.on("connection", (ws) => {
     deps.wsClients.add(ws as unknown as WebSocket);
     (ws as unknown as WebSocket).send(JSON.stringify({ type: "connected", timestamp: Date.now() }));

@@ -484,8 +484,12 @@ ${pc.bold("Models:")}
 
   if (startNow) {
     p.log.step("Starting Aethera...");
-    const { startServer } = await import("./start.js");
-    await startServer();
+    try {
+      const { startServer } = await import("./start.js");
+      await startServer();
+    } catch (e) {
+      p.log.error(pc.red(`Failed to start: ${e instanceof Error ? e.message : String(e)}`));
+    }
   }
 
   p.outro("Done!");

@@ -18,7 +18,7 @@ interface AccountState {
   dailyTrades: number;
 }
 
-interface ScreeningResult {
+export interface ScreeningResult {
   symbol: string;
   score: number;
   direction: "LONG" | "SHORT" | "WAIT";

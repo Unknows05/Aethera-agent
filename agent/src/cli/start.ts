@@ -104,6 +104,7 @@ export async function startServer(): Promise<void> {
     appConfig: cfg,
     tradeHandler,
     hivemind: hc,
+    scanner,
   };
 
   const startEquity = balance || 0;

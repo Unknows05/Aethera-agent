@@ -1,8 +1,10 @@
 import { BinanceClient } from "../exchange/binance.js";
-import { OpenRouterClient } from "../llm/client.js";
+import { OpenRouterClient, type ChatMessage } from "../llm/client.js";
+import { Scanner } from "../screening/scanner.js";
+import type { ScoredCoin } from "../screening/types.js";
 import type { Config } from "../config/schema.js";
 import type { HivemindClient } from "../hivemind/client.js";
-import { buildGoalState, buildContext, formatContextForLLM, type Context, type Lesson } from "./context.js";
+import { buildGoalState, buildContext, formatContextForLLM, type Context, type Lesson, type ScreeningResult } from "./context.js";
 import { TOOL_DEFINITIONS, type ToolCall, type ToolResult } from "./tools.js";
 import { TradeHandler } from "./tool-handlers/trade.js";
 
@@ -14,6 +16,7 @@ export interface OrchestratorConfig {
   appConfig: Config;
   tradeHandler: TradeHandler;
   hivemind: HivemindClient | null;
+  scanner: Scanner;
 }
 
 export interface CycleResult {
@@ -174,11 +177,15 @@ async function gatherContext(
   config: Config,
   daysElapsed: number,
   startEquity: number,
+  scanner: Scanner,
   hivemind: HivemindClient | null = null,
 ): Promise<Context> {
   let balance = 0;
   let positions = 0;
   let dailyPnl = 0;
+  let btcPrice = 0;
+  let btcChange24h = 0;
+  let screening: ScreeningResult[] = [];
 
   try {
     balance = await binance.getBalance();
@@ -198,25 +205,54 @@ async function gatherContext(
     /* use defaults */
   }
 
-  const goal = buildGoalState(balance, startEquity, config, daysElapsed);
+  // Run scanner — ini yg bikin LLM liat signal real
+  try {
+    const tickers = await binance.getTickers();
+    const btc = tickers.find((t) => t.symbol === "BTCUSDT");
+    if (btc) {
+      btcPrice = Number(btc.lastPrice);
+      btcChange24h = Number(btc.priceChangePercent);
+    }
+  } catch { /* non-blocking */ }
+
+  try {
+    const scanResult = await scanner.scan();
+    screening = scanResult.coins
+      .filter((c) => c.direction !== "WAIT")
+      .slice(0, 20)
+      .map((c) => ({
+        symbol: c.symbol,
+        score: c.score,
+        direction: c.direction,
+        confidence: c.confidence,
+        regime: c.regime,
+        reasons: c.reasons,
+        sl: c.sl,
+        tp: c.tp,
+      }));
+  } catch (e) {
+    console.error("Scanner error:", e instanceof Error ? e.message : e);
+  }
 
   // Pull shared lessons from hivemind hub
   let fetchedLessons: Lesson[] = [];
   if (hivemind) {
     try {
       const shared = await hivemind.fetchSharedLessons(10);
-      fetchedLessons = shared as import("./context.js").Lesson[];
+      fetchedLessons = shared as Lesson[];
     } catch { /* non-blocking */ }
   }
 
+  const goal = buildGoalState(balance, startEquity, config, daysElapsed);
+
   return buildContext({
     market: {
-      btcRegime: "unknown",
-      btcPrice: 0,
-      btcChange24h: 0,
+      btcRegime: btcChange24h > 2 ? "bullish" : btcChange24h < -2 ? "bearish" : "neutral",
+      btcPrice,
+      btcChange24h,
       fundingAvg: 0,
-      topGainers: [],
-      topLosers: [],
+      topGainers: screening.filter((s) => s.direction === "LONG").slice(0, 3).map((s) => s.symbol),
+      topLosers: screening.filter((s) => s.direction === "SHORT").slice(0, 3).map((s) => s.symbol),
     },
     account: {
       balance,
@@ -226,7 +262,7 @@ async function gatherContext(
       dailyPnl,
       dailyTrades: 0,
     },
-    screening: [],
+    screening,
     risk: {
       circuitBreakerActive: false,
       circuitBreakerReason: "",
@@ -251,36 +287,109 @@ export async function runHunterCycle(
     orchestrator.appConfig,
     daysElapsed,
     startEquity,
+    orchestrator.scanner,
     orchestrator.hivemind,
   );
 
-  const prompt = formatContextForLLM(ctx);
+  // Multi-turn ReAct loop — max 3 langkah
+  const systemMsg = {
+    role: "system" as const,
+    content: "You are an autonomous AI trading agent for Binance Futures. Your goal is to grow equity aggressively and compound profits. Use the available tools to make trading decisions. You can refuse to trade by calling wait(). Always explain your reasoning.",
+  };
 
-  const llmResponse = await orchestrator.openrouter.chat(
-    [
-      {
-        role: "system",
-        content:
-          "You are an autonomous AI trading agent for Binance Futures. Your goal is to grow equity aggressively and compound profits. Use the available tools to make trading decisions. You can refuse to trade by calling wait(). Always explain your reasoning.",
-      },
-      { role: "user", content: prompt },
-    ],
-    TOOL_DEFINITIONS,
-  );
+  const userMsg = {
+    role: "user" as const,
+    content: formatContextForLLM(ctx),
+  };
 
-  const toolCalls = parseToolCalls(llmResponse);
+  const messages: ChatMessage[] = [systemMsg, userMsg];
+  const allDecisions: ToolResult[] = [];
+  let lastRawResponse: unknown = null;
+  let scannedSignals: ScreeningResult[] = ctx.screening;
 
-  const results: ToolResult[] = [];
-  for (const call of toolCalls) {
-    const result = await executeToolCall(call, ctx, orchestrator.tradeHandler);
-    results.push(result);
+  for (let step = 0; step < 3; step++) {
+    const raw = await orchestrator.openrouter.chat(messages, TOOL_DEFINITIONS);
+    lastRawResponse = raw;
+
+    const toolCalls = parseToolCalls(raw);
+    if (toolCalls.length === 0) break;
+
+    // Push assistant's tool_calls message back so LLM remembers what it called
+    const choices = (raw as unknown as Record<string, unknown>)?.choices as Array<Record<string, unknown>> | undefined;
+    const rawMessage = choices?.[0]?.message as Record<string, unknown> | undefined;
+    if (rawMessage) {
+      messages.push(rawMessage as unknown as ChatMessage);
+    }
+
+    const stepResults = await Promise.all(
+      toolCalls.map(async (call) => {
+        // scan_market: execute scanner langsung
+        if (call.function.name === "scan_market") {
+          try {
+            const scanResult = await orchestrator.scanner.scan();
+            const coins = scanResult.coins.filter((c) => c.direction !== "WAIT").slice(0, 20);
+            scannedSignals = coins.map((c) => ({
+              symbol: c.symbol,
+              score: c.score,
+              direction: c.direction,
+              confidence: c.confidence,
+              regime: c.regime,
+              reasons: c.reasons,
+              sl: c.sl,
+              tp: c.tp,
+            }));
+            return {
+              toolCallId: call.id,
+              success: true,
+              data: { action: "scan_market", signals: scannedSignals, count: scannedSignals.length },
+            } as ToolResult;
+          } catch (e) {
+            return {
+              toolCallId: call.id,
+              success: false,
+              error: `Scan failed: ${e instanceof Error ? e.message : String(e)}`,
+            } as ToolResult;
+          }
+        }
+
+        // Update ctx screening dengan sinyal terbaru (dari scan atau init)
+        const stepCtx = { ...ctx, screening: scannedSignals };
+        return executeToolCall(call, stepCtx, orchestrator.tradeHandler);
+      }),
+    );
+
+    allDecisions.push(...stepResults);
+
+    // Feed hasil tool balik ke LLM sebagai "tool" role
+    for (const r of stepResults) {
+      messages.push({
+        role: "tool",
+        tool_call_id: r.toolCallId,
+        content: JSON.stringify(r),
+      } as ChatMessage);
+    }
+  }
+
+  // Ringkas llmResponse — ambil cuma content + tool calls terakhir
+  let summary = "No action taken";
+  if (lastRawResponse) {
+    try {
+      const parsed = lastRawResponse as Record<string, unknown>;
+      const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
+      const msg = choices?.[0]?.message as Record<string, unknown> | undefined;
+      if (msg?.content && typeof msg.content === "string") summary = msg.content.slice(0, 300);
+      else if (allDecisions.length > 0) {
+        const actions = allDecisions.map((d) => d.data?.action || d.error || "?").filter(Boolean).join(", ");
+        summary = `Executed: ${actions}`;
+      }
+    } catch { /* fallback */ }
   }
 
   return {
     agent: "hunter",
-    decisions: results,
-    context: ctx,
-    llmResponse: JSON.stringify(llmResponse),
+    decisions: allDecisions,
+    context: { ...ctx, screening: scannedSignals },
+    llmResponse: summary,
     durationMs: Date.now() - startTime,
   };
 }
@@ -297,6 +406,7 @@ export async function runHealerCycle(
     orchestrator.appConfig,
     daysElapsed,
     startEquity,
+    orchestrator.scanner,
     orchestrator.hivemind,
   );
 

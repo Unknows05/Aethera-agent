@@ -94,10 +94,19 @@ export async function startServer(): Promise<void> {
     });
 
     tuiProcess.on("exit", (code) => {
-      console.log(`TUI exited (code: ${code})`);
+      if (code !== 0) {
+        console.log(`TUI exited unexpectedly (code: ${code}) — continuing without TUI`);
+      }
     });
-  } else if (!existsSync(distCli)) {
-    console.log("TUI not built — run 'cd tui && npm run build' to build");
+    tuiProcess.on("error", () => {
+      console.log("TUI failed to start — continuing without TUI");
+    });
+  } else {
+    if (!process.stdout.isTTY && existsSync(distCli)) {
+      console.log("No TTY available — TUI skipped");
+    } else if (!existsSync(distCli)) {
+      console.log("TUI not built — run 'cd tui && npm run build' to build");
+    }
   }
 
   // Hivemind client

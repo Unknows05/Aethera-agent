@@ -216,6 +216,17 @@ export async function initWizard(): Promise<void> {
     selectedPrimary = custom as string;
   }
 
+  const s1 = p.spinner();
+  s1.start(`Testing ${selectedPrimary}...`);
+  const primaryTest = orClient ? await orClient.testModel(selectedPrimary) : { ok: false as const, latencyMs: 0, error: "No OpenRouter connection" };
+  if (primaryTest.ok) {
+    s1.stop(pc.green(`✓ ${selectedPrimary} responded in ${primaryTest.latencyMs}ms`));
+  } else {
+    s1.stop(pc.yellow(`⚠ ${selectedPrimary} test: ${primaryTest.error || "no response"}`));
+    const proceed = await p.confirm({ message: "Model test failed. Continue anyway?", initialValue: false });
+    if (p.isCancel(proceed) || !proceed) process.exit(0);
+  }
+
   const healerModel = await p.select({
     message: "Select Model for Healer (fast, cheap):",
     options: [
@@ -227,6 +238,20 @@ export async function initWizard(): Promise<void> {
 
   if (p.isCancel(healerModel)) process.exit(0);
 
+  const selectedHealer = healerModel as string;
+  if (selectedHealer !== "__same__") {
+    const s2 = p.spinner();
+    s2.start(`Testing ${selectedHealer}...`);
+    const healerTest = orClient ? await orClient.testModel(selectedHealer) : { ok: false as const, latencyMs: 0, error: "No OpenRouter connection" };
+    if (healerTest.ok) {
+      s2.stop(pc.green(`✓ ${selectedHealer} responded in ${healerTest.latencyMs}ms`));
+    } else {
+      s2.stop(pc.yellow(`⚠ ${selectedHealer} test: ${healerTest.error || "no response"}`));
+      const proceed = await p.confirm({ message: "Healer model test failed. Continue anyway?", initialValue: false });
+      if (p.isCancel(proceed) || !proceed) process.exit(0);
+    }
+  }
+
   const curatorModel = await p.select({
     message: "Select Model for Curator/Learning (strong reasoning):",
     options: [
@@ -237,6 +262,20 @@ export async function initWizard(): Promise<void> {
   });
 
   if (p.isCancel(curatorModel)) process.exit(0);
+
+  const selectedCurator = curatorModel as string;
+  if (selectedCurator !== "__same__") {
+    const s3 = p.spinner();
+    s3.start(`Testing ${selectedCurator}...`);
+    const curatorTest = orClient ? await orClient.testModel(selectedCurator) : { ok: false as const, latencyMs: 0, error: "No OpenRouter connection" };
+    if (curatorTest.ok) {
+      s3.stop(pc.green(`✓ ${selectedCurator} responded in ${curatorTest.latencyMs}ms`));
+    } else {
+      s3.stop(pc.yellow(`⚠ ${selectedCurator} test: ${curatorTest.error || "no response"}`));
+      const proceed = await p.confirm({ message: "Curator model test failed. Continue anyway?", initialValue: false });
+      if (p.isCancel(proceed) || !proceed) process.exit(0);
+    }
+  }
 
   // ── Step 3: Growth Strategy ──
   p.log.step(pc.bold("Step 3/4: Growth Strategy"));

@@ -143,4 +143,31 @@ export class OpenRouterClient {
       return { success: false, modelCount: 0, error: msg };
     }
   }
+
+  async testModel(modelId: string): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+    const start = Date.now();
+    try {
+      const res = await fetch(`${OPENROUTER_API}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+          "HTTP-Referer": "https://github.com/Unknows05/Aethera",
+          "X-Title": "Aethera v2",
+        },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: "user", content: "Reply with one word: ok" }],
+          max_tokens: 10,
+        }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        return { ok: false, latencyMs: Date.now() - start, error: `${res.status}: ${text}` };
+      }
+      return { ok: true, latencyMs: Date.now() - start };
+    } catch (e) {
+      return { ok: false, latencyMs: Date.now() - start, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
 }

@@ -181,9 +181,18 @@ export async function startServer(options?: StartOptions): Promise<void> {
 
     if (!hc || !hc.status.connected) return;
 
-    // Push screening signals
+    // Push screening signals with enrichment
     for (const signal of result.context.screening) {
-      hc.publishSignal(signal.symbol, signal.direction, signal.confidence);
+      hc.publishSignal(signal.symbol, signal.direction, signal.confidence, {
+        fundingRate: signal.fundingRate,
+        openInterest: signal.openInterest,
+        oiChange: signal.oiChange,
+        takerBuyRatio: signal.takerBuyRatio,
+        topLongShortRatio: signal.topLongShortRatio,
+        globalLongShortRatio: signal.globalLongShortRatio,
+        depthImbalance: signal.depthImbalance,
+        volume24h: signal.volume24h,
+      });
     }
 
     // Push trade decisions + results

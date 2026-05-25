@@ -1,7 +1,7 @@
 {
   "name": "aethera-hivemind-hub",
-  "version": "2.0.0",
-  "description": "Hivemind hub server untuk Aethera v2 — shared signals, lessons, weights",
+  "version": "2.0.1",
+  "description": "Hivemind hub server untuk Aethera v2 \u2014 shared signals, lessons, weights",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/hub.ts",

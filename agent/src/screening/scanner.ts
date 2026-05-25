@@ -163,12 +163,24 @@ export class Scanner {
     const fundingRate = pi ? Number(pi.lastFundingRate) : 0;
 
     let openInterest = 0;
+    let oiChange = 0;
     let takerBuyRatio = 0;
     let globalLongShortRatio = 0;
+    let topLongShortRatio = 0;
+    let depthImbalance = 0;
 
     try {
       const oi = await this.client.getOpenInterest(coin.symbol);
       openInterest = Number(oi.openInterest);
+    } catch { /* non-critical */ }
+
+    try {
+      const oiHist = await this.client.getOpenInterestHist(coin.symbol, "5m", 2);
+      if (oiHist.length >= 2) {
+        const prev = Number(oiHist[0].sumOpenInterestValue);
+        const curr = Number(oiHist[1].sumOpenInterestValue);
+        if (prev > 0) oiChange = (curr - prev) / prev;
+      }
     } catch { /* non-critical */ }
 
     try {
@@ -179,15 +191,31 @@ export class Scanner {
     } catch { /* non-critical */ }
 
     try {
-      const ls = await this.client.getLongShortRatio(coin.symbol, "5m", 1);
-      if (ls.length > 0) {
-        globalLongShortRatio = Number(ls[0].longShortRatio);
-      }
+      const [global, top] = await Promise.all([
+        this.client.getLongShortRatio(coin.symbol, "5m", 1),
+        this.client.getTopTraderRatio(coin.symbol, "5m", 1),
+      ]);
+      if (global.length > 0) globalLongShortRatio = Number(global[0].longShortRatio);
+      if (top.length > 0) topLongShortRatio = Number(top[0].longShortRatio);
+    } catch { /* non-critical */ }
+
+    try {
+      const depth = await this.client.getDepth(coin.symbol, 5);
+      const bidVol = depth.bids.reduce((s, b) => s + Number(b[0]) * Number(b[1]), 0);
+      const askVol = depth.asks.reduce((s, a) => s + Number(a[0]) * Number(a[1]), 0);
+      const total = bidVol + askVol;
+      if (total > 0) depthImbalance = (bidVol - askVol) / total;
     } catch { /* non-critical */ }
 
     const volume24h = tickerMap.get(coin.symbol) ? Number(tickerMap.get(coin.symbol)!.quoteVolume) : 0;
 
-    return { ...coin, fundingRate, openInterest, takerBuyRatio, globalLongShortRatio, depthImbalance: 0, volume24h };
+    // Volatility regime: ATR% of current vs 7d avg
+    const atrPct = coin.indicators.atr.percent;
+
+    return {
+      ...coin, fundingRate, openInterest, oiChange, takerBuyRatio,
+      topLongShortRatio, globalLongShortRatio, depthImbalance, volume24h,
+    };
   }
 
   private async addEnrichment(

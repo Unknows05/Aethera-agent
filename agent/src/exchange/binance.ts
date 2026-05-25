@@ -183,8 +183,24 @@ export class BinanceClient {
     });
   }
 
+  async getTopTraderRatio(symbol: string, period = "5m", limit = 100): Promise<Array<{ longShortRatio: string; longAccount: string; shortAccount: string }>> {
+    return publicRequest("GET", "/futures/data/topLongShortPositionRatio", {
+      symbol,
+      period,
+      limit,
+    });
+  }
+
   async getTakerVolume(symbol: string, period = "5m", limit = 100): Promise<Array<{ buySellRatio: string; buyVol: string; sellVol: string }>> {
     return publicRequest("GET", "/futures/data/takerlongshortRatio", {
+      symbol,
+      period,
+      limit,
+    });
+  }
+
+  async getOpenInterestHist(symbol: string, period = "5m", limit = 2): Promise<Array<{ sumOpenInterest: string; sumOpenInterestValue: string; timestamp: number }>> {
+    return publicRequest("GET", "/futures/data/openInterestHist", {
       symbol,
       period,
       limit,

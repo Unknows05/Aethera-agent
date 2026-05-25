@@ -42,6 +42,14 @@ db.exec(`
     direction TEXT NOT NULL,
     confidence REAL NOT NULL,
     agentId TEXT NOT NULL,
+    funding_rate REAL,
+    open_interest REAL,
+    oi_change REAL,
+    taker_buy_ratio REAL,
+    top_long_short_ratio REAL,
+    global_long_short_ratio REAL,
+    depth_imbalance REAL,
+    volume_24h REAL,
     timestamp TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (agentId) REFERENCES agents(id)
   );
@@ -57,6 +65,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_lessons_timestamp ON lessons(timestamp);
   CREATE INDEX IF NOT EXISTS idx_agents_apikey ON agents(apiKey);
 `);
+
+// Migration: add enrichment columns to existing signal_votes table
+const existingCols = db.prepare("PRAGMA table_info(signal_votes)").all() as Array<{ name: string }>;
+const colNames = existingCols.map((c) => c.name);
+const enrichCols = ["funding_rate", "open_interest", "oi_change", "taker_buy_ratio", "top_long_short_ratio", "global_long_short_ratio", "depth_imbalance", "volume_24h"];
+for (const col of enrichCols) {
+  if (!colNames.includes(col)) {
+    db.exec(`ALTER TABLE signal_votes ADD COLUMN ${col} REAL`);
+  }
+}
 
 function ts(): string {
   return new Date().toISOString();
@@ -115,11 +133,22 @@ export function getSharedLessons(limit = 20): Array<{
 }
 
 export function recordSignalVote(vote: {
-  id: string; symbol: string; direction: string; confidence: number; agentId: string
+  id: string; symbol: string; direction: string; confidence: number; agentId: string;
+  funding_rate?: number; open_interest?: number; oi_change?: number;
+  taker_buy_ratio?: number; top_long_short_ratio?: number; global_long_short_ratio?: number;
+  depth_imbalance?: number; volume_24h?: number;
 }): void {
-  db.prepare(
-    "INSERT INTO signal_votes (id, symbol, direction, confidence, agentId) VALUES (?, ?, ?, ?, ?)"
-  ).run(vote.id, vote.symbol, vote.direction, vote.confidence, vote.agentId);
+  db.prepare(`
+    INSERT INTO signal_votes (id, symbol, direction, confidence, agentId,
+      funding_rate, open_interest, oi_change, taker_buy_ratio,
+      top_long_short_ratio, global_long_short_ratio, depth_imbalance, volume_24h)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    vote.id, vote.symbol, vote.direction, vote.confidence, vote.agentId,
+    vote.funding_rate ?? null, vote.open_interest ?? null, vote.oi_change ?? null,
+    vote.taker_buy_ratio ?? null, vote.top_long_short_ratio ?? null,
+    vote.global_long_short_ratio ?? null, vote.depth_imbalance ?? null, vote.volume_24h ?? null,
+  );
 
   const count = (db.prepare("SELECT COUNT(*) as c FROM signal_votes").get() as { c: number }).c;
   if (count > 10000) {
@@ -129,6 +158,8 @@ export function recordSignalVote(vote: {
 
 export function getAggregatedSignals(minVotes = 2): Array<{
   symbol: string; longs: number; shorts: number; avgConfidence: number; totalVotes: number;
+  avgFundingRate?: number; avgTakerBuyRatio?: number; avgTopLongShortRatio?: number;
+  avgGlobalLongShortRatio?: number; totalOpenInterest?: number;
 }> {
   const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
 
@@ -137,13 +168,22 @@ export function getAggregatedSignals(minVotes = 2): Array<{
       SUM(CASE WHEN direction = 'LONG' THEN 1 ELSE 0 END) as longs,
       SUM(CASE WHEN direction = 'SHORT' THEN 1 ELSE 0 END) as shorts,
       ROUND(AVG(confidence), 0) as avgConfidence,
-      COUNT(*) as totalVotes
+      COUNT(*) as totalVotes,
+      AVG(funding_rate) as avgFundingRate,
+      AVG(taker_buy_ratio) as avgTakerBuyRatio,
+      AVG(top_long_short_ratio) as avgTopLongShortRatio,
+      AVG(global_long_short_ratio) as avgGlobalLongShortRatio,
+      MAX(open_interest) as totalOpenInterest
     FROM signal_votes
     WHERE timestamp >= ?
     GROUP BY symbol
     HAVING totalVotes >= ?
     ORDER BY totalVotes DESC
-  `).all(oneHourAgo, minVotes) as Array<{ symbol: string; longs: number; shorts: number; avgConfidence: number; totalVotes: number }>;
+  `).all(oneHourAgo, minVotes) as Array<{
+    symbol: string; longs: number; shorts: number; avgConfidence: number; totalVotes: number;
+    avgFundingRate: number | null; avgTakerBuyRatio: number | null;
+    avgTopLongShortRatio: number | null; avgGlobalLongShortRatio: number | null; totalOpenInterest: number | null;
+  }>;
 
   return rows.map((r) => ({
     symbol: r.symbol,
@@ -151,6 +191,11 @@ export function getAggregatedSignals(minVotes = 2): Array<{
     shorts: r.shorts,
     avgConfidence: r.avgConfidence,
     totalVotes: r.totalVotes,
+    avgFundingRate: r.avgFundingRate ?? undefined,
+    avgTakerBuyRatio: r.avgTakerBuyRatio ?? undefined,
+    avgTopLongShortRatio: r.avgTopLongShortRatio ?? undefined,
+    avgGlobalLongShortRatio: r.avgGlobalLongShortRatio ?? undefined,
+    totalOpenInterest: r.totalOpenInterest ?? undefined,
   }));
 }
 

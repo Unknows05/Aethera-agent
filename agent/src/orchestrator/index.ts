@@ -256,7 +256,9 @@ async function gatherContext(
         tp: c.tp,
         fundingRate: c.fundingRate,
         openInterest: c.openInterest,
+        oiChange: c.oiChange,
         takerBuyRatio: c.takerBuyRatio,
+        topLongShortRatio: c.topLongShortRatio,
         globalLongShortRatio: c.globalLongShortRatio,
         depthImbalance: c.depthImbalance,
         volume24h: c.volume24h,
@@ -267,12 +269,12 @@ async function gatherContext(
     withOI.sort((a, b) => (b.openInterest || 0) - (a.openInterest || 0));
     topOpenInterest.push(...withOI.slice(0, 10).map((c) => ({ symbol: c.symbol, oi: c.openInterest || 0 })));
 
-    // L/S divergence: bandingin taker ratio vs global ratio
+    // L/S divergence: top trader vs global ratio
     for (const c of scanResult.coins.slice(0, 20)) {
-      if (c.takerBuyRatio && c.takerBuyRatio > 0 && c.globalLongShortRatio && c.globalLongShortRatio > 0) {
-        const divergence = c.takerBuyRatio - c.globalLongShortRatio;
+      if (c.topLongShortRatio && c.topLongShortRatio > 0 && c.globalLongShortRatio && c.globalLongShortRatio > 0) {
+        const divergence = c.topLongShortRatio - c.globalLongShortRatio;
         if (Math.abs(divergence) > 0.3) {
-          lsDivergences.push({ symbol: c.symbol, topRatio: c.takerBuyRatio, globalRatio: c.globalLongShortRatio, divergence });
+          lsDivergences.push({ symbol: c.symbol, topRatio: c.topLongShortRatio, globalRatio: c.globalLongShortRatio, divergence });
         }
       }
     }

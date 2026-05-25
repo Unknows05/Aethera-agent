@@ -162,8 +162,27 @@ export class HivemindClient {
   // ============================================================
   // Agent API
   // ============================================================
-  publishSignal(symbol: string, direction: "LONG" | "SHORT" | "WAIT", confidence: number): void {
-    this.send({ type: "signal_vote", symbol, direction, confidence });
+  publishSignal(symbol: string, direction: "LONG" | "SHORT" | "WAIT", confidence: number, enrichment?: {
+    fundingRate?: number;
+    openInterest?: number;
+    oiChange?: number;
+    takerBuyRatio?: number;
+    topLongShortRatio?: number;
+    globalLongShortRatio?: number;
+    depthImbalance?: number;
+    volume24h?: number;
+  }): void {
+    this.send({
+      type: "signal_vote", symbol, direction, confidence,
+      funding_rate: enrichment?.fundingRate,
+      open_interest: enrichment?.openInterest,
+      oi_change: enrichment?.oiChange,
+      taker_buy_ratio: enrichment?.takerBuyRatio,
+      top_long_short_ratio: enrichment?.topLongShortRatio,
+      global_long_short_ratio: enrichment?.globalLongShortRatio,
+      depth_imbalance: enrichment?.depthImbalance,
+      volume_24h: enrichment?.volume24h,
+    });
   }
 
   publishLesson(lesson: Record<string, unknown>, tags: string, win: boolean): void {

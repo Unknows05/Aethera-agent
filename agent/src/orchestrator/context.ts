@@ -31,7 +31,9 @@ export interface ScreeningResult {
   tp: number;
   fundingRate?: number;
   openInterest?: number;
+  oiChange?: number;
   takerBuyRatio?: number;
+  topLongShortRatio?: number;
   globalLongShortRatio?: number;
   depthImbalance?: number;
   volume24h?: number;
@@ -171,7 +173,13 @@ export function formatContextForLLM(ctx: Context): string {
       ).join(" | ")}`
     : "";
 
-  const extraLines = [fundingSection, oiSection, lsDivergenceSection].filter(Boolean).join("\n");
+  const lsDivergenceSection2 = ctx.market.lsDivergences.length > 0
+    ? `L/S Divergence (Top vs Global): ${ctx.market.lsDivergences.slice(0, 3).map(d =>
+        `${d.symbol} top=${d.topRatio.toFixed(2)} global=${d.globalRatio.toFixed(2)} (${d.divergence > 0 ? "top bull" : "top bear"})`
+      ).join(" | ")}`
+    : "";
+
+  const extraLines = [fundingSection, oiSection, lsDivergenceSection2].filter(Boolean).join("\n");
 
   return `=== MARKET STATE ===
 BTC Regime: ${ctx.market.btcRegime} | Price: $${ctx.market.btcPrice.toLocaleString()} | 24h: ${ctx.market.btcChange24h > 0 ? "+" : ""}${ctx.market.btcChange24h}%
@@ -199,9 +207,15 @@ Risk Tier: max ${(ctx.goal.riskTier.maxRisk * 100).toFixed(0)}% risk, ${ctx.goal
 === TOP SIGNALS ===
 ${ctx.screening.length === 0 ? "No signals available" : ctx.screening.slice(0, 5).map((s, i) => {
   const enrich = s.fundingRate !== undefined
-    ? ` | Funding: ${(s.fundingRate * 100).toFixed(4)}% | Taker: ${s.takerBuyRatio?.toFixed(2)} | OI: ${s.openInterest ? `$${(s.openInterest / 1e6).toFixed(0)}M` : "N/A"}`
+    ? [
+        s.fundingRate ? `Fund:${(s.fundingRate * 100).toFixed(4)}%` : "",
+        s.takerBuyRatio && s.topLongShortRatio ? `Top/Global:${s.topLongShortRatio.toFixed(2)}/${s.globalLongShortRatio?.toFixed(2)}` : "",
+        s.oiChange ? `OI:${(s.oiChange * 100).toFixed(1)}%` : s.openInterest ? `OI:$${(s.openInterest / 1e6).toFixed(0)}M` : "",
+        s.depthImbalance ? `Depth:${(s.depthImbalance * 100).toFixed(0)}%` : "",
+        s.takerBuyRatio ? `Taker:${s.takerBuyRatio.toFixed(2)}` : "",
+      ].filter(Boolean).join(" ")
     : "";
-  return `${i + 1}. ${s.symbol} ${s.direction === "LONG" ? "🟢" : "🔴"} Score: ${s.score} | Conf: ${s.confidence} | Regime: ${s.regime}${s.reasons.length ? ` | ${s.reasons.slice(0, 2).join(", ")}` : ""}${enrich}`;
+  return `${i + 1}. ${s.symbol} ${s.direction === "LONG" ? "🟢" : "🔴"} Score:${s.score} Conf:${s.confidence} ${s.regime}${s.reasons.length ? ` ${s.reasons.slice(0, 2).join("/")}` : ""}${enrich ? " | "+enrich : ""}`;
 }).join("\n")}
 
 === LESSONS ===

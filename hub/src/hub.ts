@@ -162,6 +162,14 @@ wss.on("connection", (ws, req) => {
             direction: msg.direction || "WAIT",
             confidence: Number(msg.confidence) || 50,
             agentId: agent.id,
+            funding_rate: msg.funding_rate != null ? Number(msg.funding_rate) : undefined,
+            open_interest: msg.open_interest != null ? Number(msg.open_interest) : undefined,
+            oi_change: msg.oi_change != null ? Number(msg.oi_change) : undefined,
+            taker_buy_ratio: msg.taker_buy_ratio != null ? Number(msg.taker_buy_ratio) : undefined,
+            top_long_short_ratio: msg.top_long_short_ratio != null ? Number(msg.top_long_short_ratio) : undefined,
+            global_long_short_ratio: msg.global_long_short_ratio != null ? Number(msg.global_long_short_ratio) : undefined,
+            depth_imbalance: msg.depth_imbalance != null ? Number(msg.depth_imbalance) : undefined,
+            volume_24h: msg.volume_24h != null ? Number(msg.volume_24h) : undefined,
           });
           const aggregated = getAggregatedSignals(1);
           broadcast({ type: "signal_update", aggregated, timestamp: Date.now() });

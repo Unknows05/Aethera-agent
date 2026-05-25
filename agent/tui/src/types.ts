@@ -27,6 +27,22 @@ export interface Signal {
   confidence: number;
   regime: string;
   reasons: string[];
+  fundingRate?: number;
+  openInterest?: number;
+  takerBuyRatio?: number;
+  depthImbalance?: number;
+  volume24h?: number;
+}
+
+export interface StateResponse {
+  balance: number;
+  equity: number;
+  btcPrice: number;
+  fundingAvg: number;
+  openPositions: number;
+  positions: Position[];
+  signals: Signal[];
+  uptime: number;
 }
 
 export interface SignalsResponse {

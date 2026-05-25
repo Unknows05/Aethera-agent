@@ -192,6 +192,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
 ];
 
+export const HUNTER_TOOLS = TOOL_DEFINITIONS.filter(
+  (t) => ["open_long", "open_short", "scan_market", "add_lesson", "close_position", "partial_close", "trail_sl", "wait"].includes(t.function.name),
+);
+
+export const HEALER_TOOLS = TOOL_DEFINITIONS.filter(
+  (t) => ["close_position", "partial_close", "trail_sl", "wait"].includes(t.function.name),
+);
+
 export interface ToolCall {
   id: string;
   type: "function";

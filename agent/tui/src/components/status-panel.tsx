@@ -1,5 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
+import React from "react";
+import { Box, Text } from "ink";
 import type { SystemStatus, Signal } from "../types.js";
 
 interface StatusPanelProps {
@@ -63,14 +65,17 @@ export default function StatusPanel({ status, signals }: StatusPanelProps) {
         <>
           <Box marginTop={1}>
             <Text bold color="cyan">
-              Top
+              Top Signals
             </Text>
           </Box>
-          {signals.slice(0, 5).map((s, i) => (
-            <Text key={i} color={s.direction === "LONG" ? "green" : s.direction === "SHORT" ? "red" : "gray"}>
-              {s.symbol} {s.direction} {s.confidence}% {s.score.toFixed(0)}
-            </Text>
-          ))}
+          {signals.slice(0, 5).map((s, i) => {
+            const enrich = s.fundingRate ? ` | F:${(s.fundingRate * 100).toFixed(3)}% OI:${s.openInterest ? `$${(s.openInterest / 1e6).toFixed(0)}M` : "-"} Taker:${(s.takerBuyRatio ?? 0).toFixed(2)}` : "";
+            return (
+              <Text key={i} color={s.direction === "LONG" ? "green" : s.direction === "SHORT" ? "red" : "gray"}>
+                {s.symbol} {s.direction} {s.confidence}% {s.score.toFixed(0)}{enrich}
+              </Text>
+            );
+          })}
         </>
       )}
     </Box>

@@ -5,7 +5,7 @@ import type { ScoredCoin } from "../screening/types.js";
 import type { Config } from "../config/schema.js";
 import type { HivemindClient } from "../hivemind/client.js";
 import { buildGoalState, buildContext, formatContextForLLM, type Context, type Lesson, type ScreeningResult } from "./context.js";
-import { TOOL_DEFINITIONS, type ToolCall, type ToolResult } from "./tools.js";
+import { HUNTER_TOOLS, HEALER_TOOLS, type ToolCall, type ToolResult } from "./tools.js";
 import { TradeHandler } from "./tool-handlers/trade.js";
 import { getLessonsForPrompt } from "../learning/lessons.js";
 
@@ -375,8 +375,8 @@ export async function runHunterCycle(
   let lastRawResponse: unknown = null;
   let scannedSignals: ScreeningResult[] = ctx.screening;
 
-  for (let step = 0; step < 3; step++) {
-    const raw = await orchestrator.openrouter.chat(messages, TOOL_DEFINITIONS);
+  for (let step = 0; step < 10; step++) {
+    const raw = await orchestrator.openrouter.chat(messages, HUNTER_TOOLS);
     lastRawResponse = raw;
 
     const toolCalls = parseToolCalls(raw);
@@ -524,7 +524,7 @@ For each position, call the appropriate tool. If all positions are healthy, call
       },
       { role: "user", content: healerPrompt },
     ],
-    TOOL_DEFINITIONS,
+    HEALER_TOOLS,
   );
 
   const toolCalls = parseToolCalls(llmResponse);

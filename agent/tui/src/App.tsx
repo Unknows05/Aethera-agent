@@ -4,7 +4,7 @@ import Header from "./components/header.js";
 import ChatPanel from "./components/chat-panel.js";
 import StatusPanel from "./components/status-panel.js";
 import CommandInput from "./components/input.js";
-import type { SystemStatus, Signal, AgentMessage, WsMessage } from "./types.js";
+import type { SystemStatus, Signal, AgentMessage, WsMessage, StateResponse } from "./types.js";
 
 interface AppProps {
   baseUrl: string;
@@ -143,7 +143,7 @@ export default function App({ baseUrl }: AppProps) {
 
       switch (trimmed) {
         case "/help": {
-          addMessage("system", "Commands: /status /signals /scan /positions /health /clear /filter <symbol> /q");
+          addMessage("system", "Commands: /status /state /signals /scan /positions /health /clear /filter <symbol> /q");
           break;
         }
         case "/status": {
@@ -192,6 +192,22 @@ export default function App({ baseUrl }: AppProps) {
               addMessage("system", "No open positions");
             }
           } catch { addMessage("system", "Failed to fetch positions"); }
+          break;
+        }
+        case "/state": {
+          try {
+            const r = await fetch(`${baseUrl}/api/state`);
+            if (!r.ok) { addMessage("system", `State API: HTTP ${r.status}`); break; }
+            const d = await r.json() as StateResponse;
+            addMessage("system", `State: BTC $${(d.btcPrice ?? 0).toFixed(0)} | Funding: ${(d.fundingAvg * 100).toFixed(4)}% | Signals: ${d.signals?.length ?? 0}`);
+            const top = (d.signals ?? []).slice(0, 3);
+            for (const s of top) {
+              const enrich = s.fundingRate
+                ? ` Funding: ${(s.fundingRate * 100).toFixed(4)}% Taker: ${(s.takerBuyRatio ?? 0).toFixed(2)}`
+                : "";
+              addMessage("system", `  ${s.symbol} ${s.direction} ${s.confidence}% Score:${s.score}${enrich}`);
+            }
+          } catch { addMessage("system", "State API error"); }
           break;
         }
         case "/health": {
@@ -249,7 +265,7 @@ export default function App({ baseUrl }: AppProps) {
 
       <Box marginTop={1}>
         <Text color="gray">
-          q=quit  /status  /signals  /scan  /positions  /health  /clear  /filter &lt;symbol&gt;
+          q=quit  /status  /state  /signals  /scan  /positions  /health  /clear  /filter &lt;symbol&gt;
         </Text>
       </Box>
     </Box>

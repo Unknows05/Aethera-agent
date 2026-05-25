@@ -108,6 +108,7 @@ export class OpenRouterClient {
       };
     }>,
     modelOverride?: string,
+    retries = 2,
   ): Promise<ChatCompletionResponse> {
     const model = modelOverride || this.model;
 
@@ -136,10 +137,18 @@ export class OpenRouterClient {
 
     if (!res.ok) {
       const text = await res.text();
-      if (res.status === 429 && this.fallbackModels.length > 0) {
-        return this.chat(messages, tools, this.fallbackModels[0]);
+      const isRetryable = [429, 502, 503, 529].includes(res.status);
+
+      if (isRetryable && retries > 0) {
+        const fallbackIdx = this.fallbackModels.length > 0 ? 0 : -1;
+        if (fallbackIdx >= 0 && model === this.model) {
+          return this.chat(messages, tools, this.fallbackModels[0], retries - 1);
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+        return this.chat(messages, tools, modelOverride, retries - 1);
       }
-      throw new Error(`OpenRouter API error ${res.status}: ${text}`);
+
+      throw new Error(`OpenRouter API error ${res.status}: ${text.slice(0, 200)}`);
     }
 
     return res.json() as Promise<ChatCompletionResponse>;

@@ -355,7 +355,7 @@ export async function initWizard(): Promise<void> {
   });
 
   let hivemindEnabled = false;
-  let hivemindHub = "ws://localhost:8900/api/hivemind/ws";
+  let hivemindHub = "wss://aethera-s1.com/api/hivemind/ws";
   let hivemindApiKey = "";
   let hivemindUsername = "";
 

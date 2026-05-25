@@ -41,7 +41,7 @@ export class Scanner {
     this.maxCoins = config?.maxCoins ?? 30;
     this.prefilterMinVolume = config?.prefilterMinVolume ?? 1_000_000;
     this.adxThreshold = config?.adxThreshold ?? 25;
-    this.enrichTopN = config?.enrichTopN ?? 15;
+    this.enrichTopN = config?.enrichTopN ?? 10;
   }
 
   async scan(): Promise<ScanResult> {
@@ -154,6 +154,42 @@ export class Scanner {
     });
   }
 
+  private async enrichCoin(
+    coin: ScoredCoin,
+    piMap: Map<string, { lastFundingRate: string }>,
+    tickerMap: Map<string, { lastPrice: string; quoteVolume: string; priceChangePercent: string }>,
+  ): Promise<ScoredCoin> {
+    const pi = piMap.get(coin.symbol);
+    const fundingRate = pi ? Number(pi.lastFundingRate) : 0;
+
+    let openInterest = 0;
+    let takerBuyRatio = 0;
+    let globalLongShortRatio = 0;
+
+    try {
+      const oi = await this.client.getOpenInterest(coin.symbol);
+      openInterest = Number(oi.openInterest);
+    } catch { /* non-critical */ }
+
+    try {
+      const taker = await this.client.getTakerVolume(coin.symbol, "5m", 1);
+      if (taker.length > 0) {
+        takerBuyRatio = Number(taker[0].buySellRatio);
+      }
+    } catch { /* non-critical */ }
+
+    try {
+      const ls = await this.client.getLongShortRatio(coin.symbol, "5m", 1);
+      if (ls.length > 0) {
+        globalLongShortRatio = Number(ls[0].longShortRatio);
+      }
+    } catch { /* non-critical */ }
+
+    const volume24h = tickerMap.get(coin.symbol) ? Number(tickerMap.get(coin.symbol)!.quoteVolume) : 0;
+
+    return { ...coin, fundingRate, openInterest, takerBuyRatio, globalLongShortRatio, depthImbalance: 0, volume24h };
+  }
+
   private async addEnrichment(
     coins: ScoredCoin[],
     tickerMap: Map<string, { lastPrice: string; quoteVolume: string; priceChangePercent: string }>,
@@ -165,62 +201,19 @@ export class Scanner {
       const piMap = new Map(premiumIndices.map((p) => [p.symbol, p]));
 
       const topN = coins.slice(0, this.enrichTopN);
-      const enrichmentPromises = topN.map(async (coin) => {
-        const pi = piMap.get(coin.symbol);
-        const fundingRate = pi ? Number(pi.lastFundingRate) : 0;
+      const enriched: ScoredCoin[] = [];
+      const concurrency = 5;
 
-        let openInterest = 0;
-        let takerBuyRatio = 0;
-        let topLongShortRatio = 0;
-        let globalLongShortRatio = 0;
-        let depthImbalance = 0;
+      for (let i = 0; i < topN.length; i += concurrency) {
+        const batch = topN.slice(i, i + concurrency);
+        const results = await Promise.all(
+          batch.map((coin) => this.enrichCoin(coin, piMap, tickerMap)),
+        );
+        enriched.push(...results);
+      }
 
-        try {
-          const oi = await this.client.getOpenInterest(coin.symbol);
-          openInterest = Number(oi.openInterest);
-        } catch { /* non-critical */ }
-
-        try {
-          const taker = await this.client.getTakerVolume(coin.symbol, "5m", 1);
-          if (taker.length > 0) {
-            takerBuyRatio = Number(taker[0].buySellRatio);
-          }
-        } catch { /* non-critical */ }
-
-        try {
-          const ls = await this.client.getLongShortRatio(coin.symbol, "5m", 1);
-          if (ls.length > 0) {
-            globalLongShortRatio = Number(ls[0].longShortRatio);
-          }
-        } catch { /* non-critical */ }
-
-        try {
-          const depth = await this.client.getDepth(coin.symbol, 20);
-          const bidVol = depth.bids.reduce((s, b) => s + Number(b[0]) * Number(b[1]), 0);
-          const askVol = depth.asks.reduce((s, a) => s + Number(a[0]) * Number(a[1]), 0);
-          const total = bidVol + askVol;
-          if (total > 0) {
-            depthImbalance = (bidVol - askVol) / total;
-          }
-        } catch { /* non-critical */ }
-
-        const volume24h = tickerMap.get(coin.symbol) ? Number(tickerMap.get(coin.symbol)!.quoteVolume) : 0;
-
-        return {
-          ...coin,
-          fundingRate,
-          openInterest,
-          takerBuyRatio,
-          topLongShortRatio,
-          globalLongShortRatio,
-          depthImbalance,
-          volume24h,
-        };
-      });
-
-      const enrichedTop = await Promise.all(enrichmentPromises);
       const untouched = coins.slice(this.enrichTopN);
-      return [...enrichedTop, ...untouched];
+      return [...enriched, ...untouched];
     } catch (e) {
       console.error("Enrichment failed:", e instanceof Error ? e.message : e);
       return coins;

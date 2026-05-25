@@ -63,32 +63,48 @@ async function request<T>(
 
   const url = `${BASE}${path}?${fullQuery}&signature=${signature}`;
 
-  const res = await fetch(url, {
-    method,
-    headers: {
-      "X-MBX-APIKEY": apiKey,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        "X-MBX-APIKEY": apiKey,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
 
-  if (!res.ok) {
+    if (res.ok) return res.json() as Promise<T>;
+
     const body = (await res.json()) as BinanceResponse;
+    if (res.status === 429 && attempt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+      continue;
+    }
+
     throw new Error(`Binance API error: ${body.code} — ${body.msg || res.statusText}`);
   }
 
-  return res.json() as Promise<T>;
+  throw new Error(`Binance API error: max retries`);
 }
 
-function publicRequest<T>(method: string, path: string, params: Record<string, string | number> = {}): Promise<T> {
+async function publicRequest<T>(method: string, path: string, params: Record<string, string | number> = {}): Promise<T> {
   const queryString = Object.entries(params)
     .map(([k, v]) => `${k}=${v}`)
     .join("&");
   const url = `${BASE}${path}${queryString ? `?${queryString}` : ""}`;
 
-  return fetch(url).then((r) => {
-    if (!r.ok) throw new Error(`Binance public API error: ${r.status}`);
-    return r.json() as Promise<T>;
-  });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch(url);
+    if (r.ok) return r.json() as Promise<T>;
+
+    if (r.status === 429 && attempt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
+      continue;
+    }
+
+    throw new Error(`Binance public API error: ${r.status}`);
+  }
+
+  throw new Error(`Binance public API error: max retries`);
 }
 
 export class BinanceClient {

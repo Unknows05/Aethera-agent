@@ -1,4 +1,5 @@
 import type { Context } from "./context.js";
+import { saveStates } from "../state/positionStore.js";
 
 export interface ToolDefinition {
   type: "function";
@@ -225,10 +226,20 @@ export const positionStates = new Map<string, PositionState>();
 
 export function recordPositionOpen(pos: PositionState): void {
   positionStates.set(pos.symbol, pos);
+  persistPositionStates();
 }
 
 export function recordPositionClose(symbol: string): void {
   positionStates.delete(symbol);
+  persistPositionStates();
+}
+
+function persistPositionStates(): void {
+  try {
+    saveStates(positionStates);
+  } catch {
+    // state file not critical
+  }
 }
 
 export interface ToolResult {

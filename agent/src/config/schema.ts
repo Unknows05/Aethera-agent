@@ -51,6 +51,12 @@ const HivemindConfigSchema = z.object({
   username: z.string().optional(),
 });
 
+const TelegramConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  token: z.string().default(""),
+  chatId: z.string().default(""),
+});
+
 export const ConfigSchema = z.object({
   version: z.string().default("2.0"),
   binance: BinanceConfigSchema,
@@ -61,6 +67,11 @@ export const ConfigSchema = z.object({
     enabled: false,
     hub: "ws://localhost:8900/api/hivemind/ws",
     apiKey: "",
+  }),
+  telegram: TelegramConfigSchema.optional().default({
+    enabled: false,
+    token: "",
+    chatId: "",
   }),
 });
 
@@ -106,6 +117,11 @@ export function getDefaultConfig(): Config {
       enabled: false,
       hub: "ws://localhost:8000/api/hivemind/ws",
       apiKey: "",
+    },
+    telegram: {
+      enabled: false,
+      token: "",
+      chatId: "",
     },
   };
 }

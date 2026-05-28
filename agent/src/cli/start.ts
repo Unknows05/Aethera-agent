@@ -13,9 +13,12 @@ import { createServer, broadcastUpdate } from "../api/server.js";
 import { runHunterCycle, runHealerCycle } from "../orchestrator/index.js";
 import type { OrchestratorConfig } from "../orchestrator/index.js";
 import type { ToolResult } from "../orchestrator/tools.js";
+import { positionStates, recordPositionClose } from "../orchestrator/tools.js";
 import { analyzeTurn } from "../learning/post-turn-review.js";
 import { appendDecision } from "../learning/decision-log.js";
 import type { AppContext } from "../api/server.js";
+import { loadStates } from "../state/positionStore.js";
+import { TelegramNotifier } from "../notifier/telegram.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -75,6 +78,38 @@ export async function startServer(options?: StartOptions): Promise<void> {
     startTime: Date.now(),
     wsClients,
   };
+
+  // ── Telegram Notifier ──
+  const telegram = new TelegramNotifier(cfg.telegram ?? { enabled: false, token: "", chatId: "" });
+
+  // ── Restore persistent state ──
+  const saved = loadStates();
+  for (const [symbol, pos] of saved) {
+    if (!positionStates.has(symbol)) {
+      positionStates.set(symbol, pos as any);
+    }
+  }
+  if (saved.size > 0) {
+    console.log(`  Restored : ${saved.size} tracked positions from disk`);
+  }
+
+  // ── Retry helper ──
+  async function withRetry<T>(label: string, fn: () => Promise<T>, maxRetries = 3): Promise<T | null> {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error(`[${new Date().toISOString()}] ${label} error (attempt ${i + 1}/${maxRetries}):`, errMsg);
+        if (i < maxRetries - 1) {
+          await new Promise((r) => setTimeout(r, 5000 * (i + 1)));
+        } else {
+          telegram.notifyError(label, errMsg);
+        }
+      }
+    }
+    return null;
+  }
 
   // Hivemind client — init BEFORE orchestrator so cycles can pull data
   let hc: HivemindClient | null = null;
@@ -161,6 +196,8 @@ export async function startServer(options?: StartOptions): Promise<void> {
   console.log(`  Hunter   : every ${hunterMs / 1000}s`);
   console.log(`  Healer   : every ${healerMs / 1000}s`);
   console.log(`Ready on :${port}`);
+
+  telegram.notifyStartup(balance || 0);
 
   // Helper: push cycle data ke hivemind hub + decision log
   function afterCycle(result: import("../orchestrator/index.js").CycleResult): void {
@@ -250,62 +287,44 @@ export async function startServer(options?: StartOptions): Promise<void> {
     if (summary) console.log(`       └─ ${summary}`);
   }
 
-  const hunterInterval = setInterval(async () => {
-    console.log(`[${new Date().toISOString()}] Hunter cycle...`);
-    try {
-      const result = await runHunterCycle(orchestrator, startEquity, getDaysElapsed());
-      broadcastUpdate({ type: "cycle", agent: "hunter", summary: result.llmResponse }, deps);
+  async function runCycleWithRetry(
+    label: string,
+    cycleFn: () => Promise<import("../orchestrator/index.js").CycleResult>,
+  ): Promise<void> {
+    console.log(`[${new Date().toISOString()}] ${label} cycle...`);
+    const result = await withRetry(label, cycleFn);
+    if (!result) return;
+
+    if (result.decisions.length > 0 || label !== "Healer") {
+      broadcastUpdate({ type: "cycle", agent: label.toLowerCase(), summary: result.llmResponse }, deps);
       afterCycle(result);
       for (const decision of result.decisions) {
+        const action = (decision.data as Record<string, unknown>)?.action as string || "";
+        const symbol = (decision.data as Record<string, unknown>)?.symbol as string || "";
         const review = analyzeTurn({
-          action: (decision.data as Record<string, unknown>)?.action as string || "",
-          symbol: (decision.data as Record<string, unknown>)?.symbol as string,
+          action,
+          symbol,
           success: decision.success,
           error: decision.error,
         });
         if (review.lessonsExtracted > 0) pushLessonToHivemind(decision);
-      }
-      logCycle("Hunter", result);
-    } catch (e) {
-      console.error(`[${new Date().toISOString()}] Hunter error:`, e);
-    }
-  }, hunterMs);
-
-  const healerInterval = setInterval(async () => {
-    console.log(`[${new Date().toISOString()}] Healer cycle...`);
-    try {
-      const result = await runHealerCycle(orchestrator, startEquity, getDaysElapsed());
-      if (result.decisions.length > 0) {
-        broadcastUpdate({ type: "cycle", agent: "healer", summary: result.llmResponse }, deps);
-        afterCycle(result);
-        for (const decision of result.decisions) {
-          const review = analyzeTurn({
-            action: (decision.data as Record<string, unknown>)?.action as string || "",
-            symbol: (decision.data as Record<string, unknown>)?.symbol as string,
-            success: decision.success,
-            error: decision.error,
-          });
-          if (review.lessonsExtracted > 0) pushLessonToHivemind(decision);
+        // Notify deploy/close
+        if (decision.success && (action === "open_long" || action === "open_short")) {
+          telegram.notifyDeploy(symbol, action === "open_long" ? "LONG" : "SHORT", 0, (decision.data as any)?.reason || "");
+        }
+        if (decision.success && action === "close_position") {
+          telegram.notifyClose(symbol, "", 0, (decision.data as any)?.reason || "");
         }
       }
-      logCycle("Healer", result);
-    } catch (e) {
-      console.error(`[${new Date().toISOString()}] Healer error:`, e);
     }
-  }, healerMs);
+    logCycle(label, result);
+  }
+
+  const hunterInterval = setInterval(() => runCycleWithRetry("Hunter", () => runHunterCycle(orchestrator, startEquity, getDaysElapsed())), hunterMs);
+  const healerInterval = setInterval(() => runCycleWithRetry("Healer", () => runHealerCycle(orchestrator, startEquity, getDaysElapsed())), healerMs);
 
   // Run first hunter cycle immediately
-  setImmediate(async () => {
-    console.log(`[${new Date().toISOString()}] Initial hunter cycle...`);
-    try {
-      const result = await runHunterCycle(orchestrator, startEquity, getDaysElapsed());
-      broadcastUpdate({ type: "cycle", agent: "hunter", summary: result.llmResponse }, deps);
-      afterCycle(result);
-      logCycle("Hunter", result);
-    } catch (e) {
-      console.error(`[${new Date().toISOString()}] Initial hunter error:`, e);
-    }
-  });
+  setImmediate(() => runCycleWithRetry("Hunter", () => runHunterCycle(orchestrator, startEquity, getDaysElapsed())));
 
 
 
@@ -313,9 +332,12 @@ export async function startServer(options?: StartOptions): Promise<void> {
   const cleanup = async () => {
     console.log(`\n[${new Date().toISOString()}] Graceful shutdown initiated...`);
 
+    let openPosCount = 0;
+    let totalUnrealizedPnl = 0;
     try {
       const pos = await orchestrator.binance.getPositionRisk();
       const openPos = pos.filter((p) => Number(p.positionAmt) !== 0);
+      openPosCount = openPos.length;
       if (openPos.length > 0) {
         console.log(`[${new Date().toISOString()}] Open positions (${openPos.length}):`);
         for (const p of openPos) {
@@ -323,8 +345,8 @@ export async function startServer(options?: StartOptions): Promise<void> {
           const side = amt > 0 ? "LONG" : "SHORT";
           console.log(`  ${p.symbol} ${side} | Entry: $${Number(p.entryPrice)} | PnL: $${Number(p.unrealizedProfit).toFixed(2)}`);
         }
-        const totalPnl = openPos.reduce((s: number, p: { unrealizedProfit: string }) => s + Number(p.unrealizedProfit), 0);
-        console.log(`[${new Date().toISOString()}] Total unrealized PnL: $${totalPnl.toFixed(2)}`);
+        totalUnrealizedPnl = openPos.reduce((s: number, p: { unrealizedProfit: string }) => s + Number(p.unrealizedProfit), 0);
+        console.log(`[${new Date().toISOString()}] Total unrealized PnL: $${totalUnrealizedPnl.toFixed(2)}`);
       } else {
         console.log(`[${new Date().toISOString()}] No open positions.`);
       }
@@ -340,6 +362,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
         hc.disconnect();
       } catch { /* ignore */ }
     }
+    await telegram.notifyShutdown(openPosCount, totalUnrealizedPnl);
     console.log(`[${new Date().toISOString()}] Shutdown complete.`);
     process.exit(0);
   };

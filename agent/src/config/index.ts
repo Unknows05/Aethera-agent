@@ -143,6 +143,11 @@ export function saveConfig(cfg: Config): void {
     `  shortMinScore: ${cfg.screening?.shortMinScore ?? 55}`,
     `  agentHunterInterval: ${cfg.screening?.agentHunterInterval ?? 1800}`,
     `  agentHealerInterval: ${cfg.screening?.agentHealerInterval ?? 300}`,
+    "",
+    "telegram:",
+    `  enabled: ${cfg.telegram?.enabled ?? false}`,
+    `  token: "${cfg.telegram?.token ?? ""}"`,
+    `  chatId: "${cfg.telegram?.chatId ?? ""}"`,
   ].join("\n");
 
   writeFileSync(configPath, yaml, "utf8");

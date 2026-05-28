@@ -1,84 +1,82 @@
 # Aethera v2 — Autonomous AI Trading Agent
 
-AI-powered trading agent for Binance Futures Perpetual (USDT-M). Self-learning via LLM orchestrator, quant screening engine, and swarm intelligence network.
-
-[Website](https://aethera-s1.com) · [Documentation](https://aethera-s1.com/docs/) · [Features](https://aethera-s1.com/features)
+AI-powered perpetual futures trading agent for Binance. Self-learning via LLM orchestrator, quant screening, and swarm intelligence network.
 
 ## Prerequisites
 
-| Runtime | Minimum | Install |
-|---------|---------|---------|
-| **Node.js** | ≥20 | [nodejs.org](https://nodejs.org/) or [nvm](https://github.com/nvm-sh/nvm) |
-| **Bun** | ≥1.0 | [bun.sh](https://bun.sh/) |
-| **Git** | — | [git-scm.com](https://git-scm.com/) |
-
-> **Note:** Only one runtime is needed. Bun is faster for development; Node.js is more widely supported.
+- **Node.js** ≥20 ([nvm](https://github.com/nvm-sh/nvm) recommended)
+- **Git**
+- Binance Futures API key (testnet recommended first)
+- OpenRouter API key ([openrouter.ai](https://openrouter.ai/keys))
 
 ## Install
 
-### Linux / macOS
+```bash
+git clone https://github.com/Unknows05/Aethera-agent
+cd Aethera-agent/agent
+npm install
+```
+
+## Setup
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Unknows05/Aethera-agent/main/install.sh | bash
+npm run setup
+# or
+npx aethera init
 ```
 
-### Windows (PowerShell)
+Wizard akan meminta:
+1. Hivemind hub URL (opsional, enter untuk skip)
+2. Binance API key + secret
+3. OpenRouter API key + model
+4. Telegram bot token (opsional)
+5. Risk parameters (max drawdown, target equity, dll)
 
-```powershell
-irm https://raw.githubusercontent.com/Unknows05/Aethera-agent/main/install.ps1 | iex
-```
-
-The installer auto-detects Bun or Node.js, clones the repo, builds TypeScript, and creates the `aethera` CLI wrapper.
-
-## Quick Start
+## Run
 
 ```bash
-aethera init           # Setup wizard: Binance API, LLM key, config
-aethera start          # Launch trading (hunter + healer cycles)
-aethera daemon start   # Background daemon (no TUI)
-aethera status         # System status
-aethera doctor         # Full system diagnostic
-aethera --help         # All commands
+# Dry-run — tidak ada transaksi beneran
+DRY_RUN=true npm start
+
+# Live mode
+npm start
 ```
 
-## Architecture
+### Mode
+
+| Perintah | Keterangan |
+|----------|------------|
+| `npm start` | Hunter cycle (scan → LLM → buka) + Healer cycle (SL/TP/OOR) |
+| `npm run dev` | Sama seperti start dengan development model |
+| `npx aethera daemon start` | Background via PM2/systemd |
+
+### Telegram Commands
+
+Setelah setup Telegram, kirim ke bot:
+- `/status` — balance + posisi
+- `/positions` — detail posisi terbuka
+- `/close ETHUSDT` — tutup posisi
+- `/signals` — kandidat teratas
+- `/network` — status hivemind
+
+## Cara Kerja
 
 ```
-LLM (OpenRouter) ──► Orchestrator ──► Hunter (30min) / Healer (5min)
-                        │
-              ┌─────────┴─────────┐
-              ▼                   ▼
-      Screening Engine      Risk Engine
-      7 indicators          Circuit breaker
-      TF-weighted scoring   Kelly position sizing
-      Regime detection      Volatility-adjusted leverage
-              │                   │
-              └─────────┬─────────┘
-                        ▼
-               TradeHandler ──► Binance Futures API
-                        │
-                        ▼
-              Learning System
-              Lessons from closed positions
-              Darwinian signal weights
-              Pool memory + cooldown
+Hunter cycle (30min)         Healer cycle (5min)
+  Scan market                  Cek posisi terbuka
+  Enrich (OI, funding, L/S)    Deterministic: SL/TP/OOR
+  Hivemind consensus            LLM: hold/close/trail
+  LLM → buka posisi             Telegram notifikasi
+  Log + evolve threshold
 ```
+
+Dua agen terpisah dengan tools berbeda:
+- **Hunter**: scan_market, open_long, open_short, wait
+- **Healer**: close_position, partial_close, trail_sl, wait
 
 ## Hivemind Network
 
-Connect to the shared swarm intelligence network to share signals, lessons, and weights with other agents.
-
-Configure in `agent/data/config.yaml`:
-
-```yaml
-hivemind:
-  enabled: true
-  hub: "wss://hivemind.aethera-s1.com/api/hivemind/ws"
-  apiKey: "your-api-key"
-  username: "your-agent-name"
-```
-
-Register an API key:
+Hubungkan ke swarm intelligence untuk berbagi sinyal dan pelajaran dengan agen lain.
 
 ```bash
 curl -X POST https://hivemind.aethera-s1.com/api/hivemind/auth/register \
@@ -86,21 +84,12 @@ curl -X POST https://hivemind.aethera-s1.com/api/hivemind/auth/register \
   -d '{"username":"my-agent","apiKey":"my-secret-key"}'
 ```
 
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| `command not found: aethera` | Run `source ~/.zshrc` (or `source ~/.bashrc`) |
-| `Node.js 20+ required` | Install via [nvm](https://github.com/nvm-sh/nvm): `curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh \| bash` |
-| `npm install` fails | Check internet, try `npm install --no-optional` |
-| Binance API error | Verify API keys in config. Ensure IP is whitelisted on Binance. |
-| OpenRouter error | Check API key balance at [openrouter.ai](https://openrouter.ai/) |
-| `aethera init` stuck | Press `Ctrl+C` and try `aethera doctor` to check connectivity |
-
 ## Uninstall
 
 ```bash
-aethera uninstall
+npx aethera uninstall
 ```
 
-Removes the installation, data, config, and CLI wrapper.
+## Disclaimer
+
+Risk tinggi. Mulai dengan `DRY_RUN=true` dan testnet. Bukan saran keuangan.

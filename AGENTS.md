@@ -41,13 +41,31 @@
 
 - `ssh febri@72.61.123.60` password `2902`
 - Agent: systemd `aethera-agent.service` → port :8000
-- Hub: manual, port :8900
+- Hub: systemd `aethera-hivemind.service` → port :8900
 - Landing: Caddy file server, config at `conf.d/aethera-s1.com.caddy`
   `try_files {path}.html {path} {path}/index.html /index.html`
+
+## Directory Structure
+
+| Path | Role |
+|------|------|
+| `~/workspace/Aethera-project-v2/` | GitHub repo — source code, user-facing |
+| `~/aethera-v2-VPS/` | VPS deployment — built dist, config.yaml, data |
+| `~/hub/` | Hivemind hub — separate deployment |
+| `~/apps/hivemind/` | Dashboard SPA — domain hivemind.aethera-s1.com |
+
+## Deploy Agent (update dari repo)
+
+```bash
+cd ~/workspace/Aethera-project-v2 && git pull
+rsync -av --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='*.md' ~/workspace/Aethera-project-v2/ ~/aethera-v2-VPS/
+cd ~/aethera-v2-VPS/agent && npm install && npm run build
+sudo systemctl restart aethera-agent
+journalctl -u aethera-agent --since "1 min ago" --no-pager -n 30
+```
 
 ## Workflow
 
 - Bahasa Indonesia unless English
 - Never code without approval
-- Deploy landing: `npm run build` in `landing/` → tar dist → scp → VPS extract
-- Deploy agent: `npm run build` in `agent/` → scp dist → restart systemd
+- Edit source di `~/workspace/Aethera-project-v2/`, deploy ke `~/aethera-v2-VPS/`

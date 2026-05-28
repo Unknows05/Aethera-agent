@@ -38,17 +38,56 @@ function parseToolCalls(llmResponse: unknown): ToolCall[] {
   const message = choices[0].message as Record<string, unknown> | undefined;
   if (!message) return [];
 
+  // Standard tool_calls dari API
   const rawCalls = message.tool_calls;
-  if (!Array.isArray(rawCalls)) return [];
+  if (Array.isArray(rawCalls) && rawCalls.length > 0) {
+    return rawCalls.map((tc) => ({
+      id: (tc as Record<string, unknown>).id as string,
+      type: "function" as const,
+      function: {
+        name: ((tc as Record<string, unknown>).function as Record<string, unknown>).name as string,
+        arguments: ((tc as Record<string, unknown>).function as Record<string, unknown>).arguments as string,
+      },
+    }));
+  }
 
-  return rawCalls.map((tc) => ({
-    id: (tc as Record<string, unknown>).id as string,
-    type: "function" as const,
-    function: {
-      name: ((tc as Record<string, unknown>).function as Record<string, unknown>).name as string,
-      arguments: ((tc as Record<string, unknown>).function as Record<string, unknown>).arguments as string,
-    },
-  }));
+  // Fallback: model gak support tools → parse JSON dari content
+  const content = message.content as string | undefined;
+  if (!content) return [];
+
+  try {
+    const parsed = JSON.parse(content) as { tool?: string; arguments?: Record<string, unknown> };
+    if (parsed.tool) {
+      return [{
+        id: `text_${Date.now()}`,
+        type: "function" as const,
+        function: {
+          name: parsed.tool,
+          arguments: JSON.stringify(parsed.arguments || {}),
+        },
+      }];
+    }
+  } catch { /* not JSON */ }
+
+  // Cari JSON dalam text content
+  const jsonMatch = content.match(/\{[\s\S]*"tool"[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as { tool?: string; arguments?: Record<string, unknown> };
+      if (parsed.tool) {
+        return [{
+          id: `text_${Date.now()}`,
+          type: "function" as const,
+          function: {
+            name: parsed.tool,
+            arguments: JSON.stringify(parsed.arguments || {}),
+          },
+        }];
+      }
+    } catch { /* ignore */ }
+  }
+
+  return [];
 }
 
 async function executeToolCall(

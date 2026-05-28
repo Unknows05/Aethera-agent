@@ -138,6 +138,28 @@ export class OpenRouterClient {
     if (!res.ok) {
       const text = await res.text();
       const isRetryable = [429, 502, 503, 529].includes(res.status);
+      const isToolError = res.status === 400 || res.status === 404;
+
+      // Model doesn't support tool_choice → retry without tools
+      if (isToolError && tools && tools.length > 0 && retries > 0) {
+        if (model === this.model && this.fallbackModels.length > 0) {
+          return this.chat(messages, tools, this.fallbackModels[0], retries - 1);
+        }
+        // Retry WITHOUT tools — embed tool descriptions in system prompt
+        const toolDesc = tools.map((t) =>
+          `- ${t.function.name}: ${t.function.description}`
+        ).join("\n");
+        const toolMsg = {
+          role: "system" as const,
+          content: `Available tools:\n${toolDesc}\n\nWhen you want to use a tool, respond with a JSON object: {"tool": "tool_name", "arguments": {...}}`,
+        };
+        const noTools = messages.map((m) =>
+          m.role === "system" && m.content
+            ? { ...m, content: `${m.content}\n\n${toolMsg.content}` }
+            : m
+        );
+        return this.chat(noTools, undefined, modelOverride, retries - 1);
+      }
 
       if (isRetryable && retries > 0) {
         const fallbackIdx = this.fallbackModels.length > 0 ? 0 : -1;

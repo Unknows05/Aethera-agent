@@ -6,5 +6,4 @@ data/
 .DS_Store
 *.pid
 coverage/
-.vite/
 AGENTS.md

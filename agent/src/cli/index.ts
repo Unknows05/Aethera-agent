@@ -137,7 +137,26 @@ async function main() {
     }
 
     case "positions": {
-      console.log("Open positions:");
+      const { showPositions } = await import("./positions.js");
+      await showPositions();
+      break;
+    }
+
+    case "candidates": {
+      const { showCandidates } = await import("./candidates.js");
+      await showCandidates();
+      break;
+    }
+
+    case "evolve": {
+      const { runEvolve } = await import("./evolve.js");
+      await runEvolve();
+      break;
+    }
+
+    case "deploy": {
+      const { manualDeploy } = await import("./deploy.js");
+      await manualDeploy();
       break;
     }
 
@@ -294,6 +313,9 @@ function showHelp() {
     scan              Run manual screening
     signals           View current signals
     positions         View open positions
+    candidates        View trade candidates
+    evolve            Run threshold evolution
+    deploy            Manual trade deploy
     doctor            Full system diagnostic
     config            View/edit config
     uninstall         Remove Aethera completely

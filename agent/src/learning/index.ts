@@ -29,3 +29,9 @@ export {
 
 export { analyzeTurn } from "./post-turn-review.js";
 export type { TurnReview } from "./post-turn-review.js";
+
+export {
+  evolveThresholds,
+  getThresholdState,
+  applyThresholdsToConfig,
+} from "./threshold-evolution.js";

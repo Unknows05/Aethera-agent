@@ -148,7 +148,16 @@ export class TradeHandler {
       return {
         toolCallId,
         success: true,
-        data: { action: "close", symbol: params.symbol, reason: params.reason },
+        data: {
+          action: "close",
+          symbol: params.symbol,
+          side: pos.side,
+          entryPrice: pos.entryPrice,
+          pnl: pos.unrealizedPnl,
+          size: Math.abs(pos.size),
+          leverage: pos.leverage,
+          reason: params.reason,
+        },
       };
     } catch (e) {
       return {

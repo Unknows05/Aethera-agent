@@ -1,13 +1,16 @@
 import { BinanceClient } from "../exchange/binance.js";
 import { OpenRouterClient, type ChatMessage } from "../llm/client.js";
-import { Scanner } from "../screening/scanner.js";
+import { Scanner, type ScanResult } from "../screening/scanner.js";
 import type { ScoredCoin } from "../screening/types.js";
 import type { Config } from "../config/schema.js";
 import type { HivemindClient } from "../hivemind/client.js";
+import { saveConfig } from "../config/index.js";
 import { buildGoalState, buildContext, formatContextForLLM, type Context, type Lesson, type ScreeningResult } from "./context.js";
+import { buildConsensusMap, applyConsensusToCoins } from "../screening/consensus.js";
 import {
   HUNTER_TOOLS,
   HEALER_TOOLS,
+  isToolAllowedForAgent,
   checkHardRules,
   recordPositionOpen,
   recordPositionClose,
@@ -17,14 +20,13 @@ import {
   resetCircuitBreaker,
   getCircuitBreakerState,
   positionStates,
+  type AgentType,
   type PositionState,
   type ToolCall,
   type ToolResult,
 } from "./tools.js";
 import { TradeHandler } from "./tool-handlers/trade.js";
 import { getLessonsForPrompt } from "../learning/lessons.js";
-
-export type AgentType = "hunter" | "healer";
 
 export interface OrchestratorConfig {
   binance: BinanceClient;
@@ -108,11 +110,21 @@ function parseToolCalls(llmResponse: unknown): ToolCall[] {
 async function executeToolCall(
   call: ToolCall,
   ctx: Context,
+  agentType: AgentType,
   tradeHandler: TradeHandler,
 ): Promise<ToolResult> {
   const args = JSON.parse(call.function.arguments) as Record<string, unknown>;
   const action = call.function.name;
   const symbol = (args.symbol as string) || "";
+
+  // ── LAYER 0: Role Enforcement — hunter cannot close/trail, healer cannot open/scan ──
+  if (!isToolAllowedForAgent(action, agentType)) {
+    return {
+      toolCallId: call.id,
+      success: false,
+      error: `Role blocked: ${action} is not allowed for ${agentType} agent`,
+    };
+  }
 
   // ── LAYER 1: Hard Rules Check (circuit breaker + drawdown + once-per-session) ──
   const ruleCheck = checkHardRules(action, args, ctx);
@@ -276,6 +288,76 @@ async function executeToolCall(
         data: { action: "add_lesson", ...args },
       };
 
+    case "update_config": {
+      const { appConfig: cfg } = await import("../config/index.js");
+      const screening = cfg.screening ?? {};
+      if (!cfg.screening) (cfg as any).screening = screening;
+      const applied: string[] = [];
+
+      if (typeof args.longMinScore === "number") {
+        const v = Math.max(45, Math.min(85, Math.round(args.longMinScore)));
+        if (v !== screening.longMinScore) {
+          applied.push(`longMinScore: ${screening.longMinScore ?? 55} → ${v}`);
+          screening.longMinScore = v;
+        }
+      }
+      if (typeof args.shortMinScore === "number") {
+        const v = Math.max(45, Math.min(85, Math.round(args.shortMinScore)));
+        if (v !== screening.shortMinScore) {
+          applied.push(`shortMinScore: ${screening.shortMinScore ?? 55} → ${v}`);
+          screening.shortMinScore = v;
+        }
+      }
+      if (typeof args.highConfidence === "number") {
+        const v = Math.max(50, Math.min(95, Math.round(args.highConfidence)));
+        if (v !== screening.highConfidence) {
+          applied.push(`highConfidence: ${screening.highConfidence ?? 70} → ${v}`);
+          screening.highConfidence = v;
+        }
+      }
+
+      // Per-tier risk params — find current tier
+      const tier = cfg.growth.equityTiers.find(
+        (t) => ctx.account.equity >= t.min && ctx.account.equity < t.max,
+      );
+      if (tier) {
+        if (typeof args.maxRisk === "number") {
+          const v = Math.round(Math.max(0.05, Math.min(0.5, args.maxRisk)) * 100) / 100;
+          if (v !== tier.maxRisk) {
+            applied.push(`maxRisk: ${tier.maxRisk} → ${v}`);
+            tier.maxRisk = v;
+          }
+        }
+        if (typeof args.maxLeverage === "number") {
+          const v = Math.max(1, Math.min(10, Math.round(args.maxLeverage)));
+          if (v !== tier.maxLeverage) {
+            applied.push(`maxLeverage: ${tier.maxLeverage} → ${v}`);
+            tier.maxLeverage = v;
+          }
+        }
+        if (typeof args.maxTrades === "number") {
+          const v = Math.max(1, Math.min(10, Math.round(args.maxTrades)));
+          if (v !== tier.maxTrades) {
+            applied.push(`maxTrades: ${tier.maxTrades} → ${v}`);
+            tier.maxTrades = v;
+          }
+        }
+      }
+
+      // Persist to disk
+      saveConfig(cfg);
+
+      return {
+        toolCallId: call.id,
+        success: true,
+        data: {
+          action: "update_config",
+          applied,
+          changes: applied.length > 0 ? Object.fromEntries(applied.map((a) => [a.split(":")[0], a.split("→")[1]?.trim()])) : {},
+        },
+      };
+    }
+
     default:
       return {
         toolCallId: call.id,
@@ -352,8 +434,9 @@ async function gatherContext(
   }
 
   // Scanner
+  let scanResult: ScanResult | null = null;
   try {
-    const scanResult = await scanner.scan();
+    scanResult = await scanner.scan();
     screening = scanResult.coins
       .filter((c) => c.direction !== "WAIT")
       .slice(0, 20)
@@ -392,6 +475,46 @@ async function gatherContext(
     }
   } catch (e) {
     errors.push(`scanner: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // Hivemind weighted consensus — adjust scores based on other agents' signals
+  if (hivemind && scanResult && screening.length > 0) {
+    try {
+      const aggregated = await hivemind.fetchAggregatedSignals(2);
+      if (aggregated.length > 0) {
+        const consensusMap = buildConsensusMap(aggregated, 2);
+        const scoredCoins = scanResult.coins; // reference from scan block above
+        const adjusted = applyConsensusToCoins(scoredCoins, consensusMap, 1.0);
+
+        // Rebuild screening from adjusted coins
+        screening = adjusted
+          .filter((c) => c.direction !== "WAIT")
+          .slice(0, 20)
+          .map((c) => {
+            const orig = screening.find((s) => s.symbol === c.symbol);
+            return {
+              symbol: c.symbol,
+              score: c.score,
+              direction: c.direction,
+              confidence: c.confidence,
+              regime: c.regime,
+              reasons: c.reasons,
+              sl: c.sl,
+              tp: c.tp,
+              fundingRate: orig?.fundingRate,
+              openInterest: orig?.openInterest,
+              oiChange: orig?.oiChange,
+              takerBuyRatio: orig?.takerBuyRatio,
+              topLongShortRatio: orig?.topLongShortRatio,
+              globalLongShortRatio: orig?.globalLongShortRatio,
+              depthImbalance: orig?.depthImbalance,
+              volume24h: orig?.volume24h,
+            };
+          });
+      }
+    } catch (e) {
+      errors.push(`consensus: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   // Local lessons
@@ -546,7 +669,7 @@ export async function runHunterCycle(
 
         // Update ctx screening dengan sinyal terbaru (dari scan atau init)
         const stepCtx = { ...ctx, screening: scannedSignals };
-        return executeToolCall(call, stepCtx, orchestrator.tradeHandler);
+        return executeToolCall(call, stepCtx, "hunter", orchestrator.tradeHandler);
       }),
     );
 
@@ -603,7 +726,7 @@ export async function runHunterCycle(
           },
         };
         const fallbackCtx = { ...ctx, screening: scannedSignals };
-        const result = await executeToolCall(fakeCall, fallbackCtx, orchestrator.tradeHandler);
+        const result = await executeToolCall(fakeCall, fallbackCtx, "hunter", orchestrator.tradeHandler);
         allDecisions.push(result);
         summary = `${fallbackReason} Auto-executed ${signal.direction} ${signal.symbol} (confidence ${signal.confidence}).`;
       }
@@ -750,7 +873,7 @@ export async function runHealerCycle(
         arguments: JSON.stringify({ symbol: d.symbol, reason: d.reason }),
       },
     };
-    const result = await executeToolCall(fakeCall, ctx, orchestrator.tradeHandler);
+    const result = await executeToolCall(fakeCall, ctx, "healer", orchestrator.tradeHandler);
     results.push(result);
   }
 
@@ -810,7 +933,7 @@ For each position, call the appropriate tool. If all positions are healthy, call
   const toolCalls = parseToolCalls(llmResponse);
 
   for (const call of toolCalls) {
-    const result = await executeToolCall(call, ctx, orchestrator.tradeHandler);
+    const result = await executeToolCall(call, ctx, "healer", orchestrator.tradeHandler);
     results.push(result);
   }
 

@@ -9,6 +9,8 @@ import { OpenRouterClient } from "../llm/client.js";
 import { loadConfig, saveConfig } from "../config/index.js";
 import { getDefaultConfig, type Config, type EquityTier } from "../config/schema.js";
 
+const DEFAULT_HUB_URL = "wss://hub.aethera-s1.com/api/hivemind/ws";
+
 function calculateDailyTarget(
   currentBalance: number,
   targetEquity: number,
@@ -166,8 +168,58 @@ export async function initWizard(): Promise<void> {
     }
   }
 
-  // ── Step 1: Binance Futures ──
-  p.log.step(pc.bold("Step 1/4: Binance Futures"));
+  // ── Step 1: Hivemind (wajib) ──
+  p.log.step(pc.bold("Step 1/5: Hivemind Network"));
+
+  const hubUrl = await p.text({
+    message: "Hub URL:",
+    initialValue: DEFAULT_HUB_URL,
+    validate: (val) => (!val ? "URL wajib diisi" : undefined),
+  });
+  if (p.isCancel(hubUrl)) process.exit(0);
+
+  const hivemindUsername = await p.text({
+    message: "Agent username (untuk identifikasi di dashboard):",
+    initialValue: `agent_${Math.random().toString(36).slice(2, 8)}`,
+    validate: (val) => {
+      if (!val || val.length < 3) return "Minimal 3 karakter";
+      if (val.length > 30) return "Maximal 30 karakter";
+      return undefined;
+    },
+  });
+  if (p.isCancel(hivemindUsername)) process.exit(0);
+
+  const hivemindApiKey = `ak_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  let hivemindAgentId = "";
+
+  const s1 = p.spinner();
+  s1.start("Registering to hivemind hub...");
+  try {
+    const httpUrl = (hubUrl as string).replace(/^ws/, "http").replace(/\/ws.*$/, "");
+    const res = await fetch(`${httpUrl}/api/hivemind/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: hivemindUsername, apiKey: hivemindApiKey }),
+    });
+    const data = await res.json() as { ok: boolean; agentId?: string };
+    if (data.ok && data.agentId) {
+      hivemindAgentId = data.agentId;
+      s1.stop(pc.green(`✓ Registered as ${hivemindUsername} (ID: ${data.agentId.slice(0, 8)}...)`));
+    } else {
+      s1.stop(pc.yellow("⚠ Hub registered but no agentId — will retry on connect"));
+    }
+  } catch (e) {
+    s1.stop(pc.red(`✗ Hub unreachable: ${e instanceof Error ? e.message : String(e)}`));
+    const proceed = await p.confirm({ message: "Continue anyway? (will retry on connect)", initialValue: true });
+    if (p.isCancel(proceed) || !proceed) process.exit(0);
+  }
+
+  p.log.info(`  Username : ${pc.cyan(hivemindUsername as string)}`);
+  p.log.info(`  API Key  : ${pc.dim(hivemindApiKey)}`);
+  if (hivemindAgentId) p.log.info(`  Agent ID : ${pc.dim(hivemindAgentId)}`);
+
+  // ── Step 2: Binance Futures ──
+  p.log.step(pc.bold("Step 2/5: Binance Futures"));
 
   const publicIP = await getPublicIP();
   p.log.info(`  Your public IP: ${pc.cyan(publicIP)}`);
@@ -227,8 +279,8 @@ export async function initWizard(): Promise<void> {
     }
   }
 
-  // ── Step 2: OpenRouter ──
-  p.log.step(pc.bold("Step 2/4: OpenRouter"));
+  // ── Step 3: OpenRouter ──
+  p.log.step(pc.bold("Step 3/5: OpenRouter"));
 
   let orConnected = false;
   let orClient: OpenRouterClient | null = null;
@@ -391,8 +443,8 @@ export async function initWizard(): Promise<void> {
     selectedCurator = curatorChoice as string;
   }
 
-  // ── Step 3: Growth Strategy ──
-  p.log.step(pc.bold("Step 3/4: Growth Strategy"));
+  // ── Step 4: Growth Strategy ──
+  p.log.step(pc.bold("Step 4/5: Growth Strategy"));
 
   p.log.info(`  Current balance: ${pc.green(`$${balance.toFixed(2)}`)} USDT`);
 
@@ -463,58 +515,6 @@ export async function initWizard(): Promise<void> {
   const tiers = generateTiers(balance, targetEquityNum, riskProfile as string);
   const llmCanRefuse = true;
 
-  // ── Step 4: Hivemind ──
-  p.log.step(pc.bold("Step 4/5: Hivemind Network"));
-
-  const enableHivemind = await p.confirm({
-    message: "Enable Hivemind? (share & learn from other agents)",
-    initialValue: false,
-  });
-
-  let hivemindEnabled = false;
-  let hivemindHub = "wss://aethera-s1.com/api/hivemind/ws";
-  let hivemindApiKey = "";
-  let hivemindUsername = "";
-
-  if (p.isCancel(enableHivemind)) process.exit(0);
-
-  if (enableHivemind) {
-    hivemindEnabled = true;
-    hivemindApiKey = `ak_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
-    hivemindUsername = `agent_${Math.random().toString(36).slice(2, 8)}`;
-
-    const hubInput = await p.text({
-      message: "Hub URL:",
-      initialValue: hivemindHub,
-      validate: (val) => (!val ? "URL wajib diisi" : undefined),
-    });
-    if (p.isCancel(hubInput)) process.exit(0);
-    hivemindHub = (hubInput as string).trim();
-
-    p.log.info(`  API Key  : ${pc.dim(hivemindApiKey)}`);
-    p.log.info(`  Username : ${pc.cyan(hivemindUsername)}`);
-
-    // Test register to hub
-    const s4 = p.spinner();
-    s4.start("Registering agent to hivemind hub...");
-    try {
-      const httpUrl = hivemindHub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
-      const res = await fetch(`${httpUrl}/api/hivemind/auth/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: hivemindUsername, apiKey: hivemindApiKey }),
-      });
-      const data = await res.json() as { ok: boolean };
-      if (data.ok) {
-        s4.stop(pc.green("✓ Registered to hivemind hub"));
-      } else {
-        s4.stop(pc.yellow("⚠ Could not register — will retry on connect"));
-      }
-    } catch {
-      s4.stop(pc.yellow("⚠ Hub unreachable — will retry on connect"));
-    }
-  }
-
   // ── Summary ──
   p.log.step(pc.bold("Step 5/5: Summary & Save"));
 
@@ -540,7 +540,7 @@ ${pc.bold("Models:")}
 
   ${pc.cyan("Curator")}     : ${selectedCurator}
 ${pc.bold("Hivemind:")}
-  ${hivemindEnabled ? `${pc.green("Enabled")} — ${hivemindHub}` : pc.dim("Disabled")}
+  ${pc.green("Enabled")} — ${hivemindUsername} @ ${hubUrl}
   `;
 
   p.log.info(summary);
@@ -577,10 +577,11 @@ ${pc.bold("Hivemind:")}
       equityTiers: tiers,
     },
     hivemind: {
-      enabled: hivemindEnabled,
-      hub: hivemindHub,
+      enabled: true,
+      hub: hubUrl as string,
       apiKey: hivemindApiKey,
-      username: hivemindUsername,
+      username: hivemindUsername as string,
+      agentId: hivemindAgentId || undefined,
     },
   };
 

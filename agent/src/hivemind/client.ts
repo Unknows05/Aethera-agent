@@ -28,6 +28,9 @@ export class HivemindClient {
   private handlers: EventHandler[] = [];
   private _agentId: string | null = null;
   private _username: string | null = null;
+  private messageQueue: Array<Record<string, unknown>> = [];
+  private flushing = false;
+  private _httpUrl: string = "";
 
   status: HivemindStatus = {
     connected: false,
@@ -39,6 +42,7 @@ export class HivemindClient {
 
   constructor(config: HivemindConfig) {
     this.config = config;
+    this._httpUrl = this.config.hub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
   }
 
   on(handler: EventHandler): void {
@@ -49,13 +53,95 @@ export class HivemindClient {
     for (const h of this.handlers) h(event);
   }
 
+  private get httpUrl(): string {
+    return this._httpUrl;
+  }
+
+  private async resolveApi(path: string, body: Record<string, unknown>): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.httpUrl}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": this.config.apiKey },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) return false;
+      const data = await res.json() as { ok: boolean };
+      return data.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private enqueue(msg: Record<string, unknown>): void {
+    this.messageQueue.push(msg);
+    if (this.messageQueue.length > 100) this.messageQueue.shift();
+  }
+
+  private async flushQueue(): Promise<void> {
+    if (this.flushing || this.messageQueue.length === 0) return;
+    this.flushing = true;
+
+    const batch = [...this.messageQueue];
+    this.messageQueue = [];
+
+    for (const msg of batch) {
+      let sent = false;
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify(msg));
+        sent = true;
+      } else {
+        sent = await this.sendViaREST(msg);
+      }
+      if (!sent) this.enqueue(msg); // re-queue if both fail
+    }
+
+    this.flushing = false;
+  }
+
+  private async sendViaREST(msg: Record<string, unknown>): Promise<boolean> {
+    switch (msg.type) {
+      case "signal_vote":
+        return this.resolveApi("/api/hivemind/signal/submit", {
+          symbol: msg.symbol,
+          direction: msg.direction,
+          confidence: msg.confidence,
+          funding_rate: msg.funding_rate,
+          open_interest: msg.open_interest,
+          oi_change: msg.oi_change,
+          taker_buy_ratio: msg.taker_buy_ratio,
+          top_long_short_ratio: msg.top_long_short_ratio,
+          global_long_short_ratio: msg.global_long_short_ratio,
+          depth_imbalance: msg.depth_imbalance,
+          volume_24h: msg.volume_24h,
+        });
+      case "lesson_share":
+        return this.resolveApi("/api/hivemind/lesson/share", {
+          lessonJson: JSON.stringify(msg.lesson || {}),
+          tags: msg.tags || "",
+          win: msg.win || 0,
+          agentId: this._agentId,
+        });
+      case "trade_result":
+        return this.resolveApi("/api/hivemind/trade/result", {
+          win: msg.win,
+          pnl: msg.pnl,
+        });
+      default:
+        return false;
+    }
+  }
+
   async connect(): Promise<void> {
     if (!this.config.enabled) return;
 
+    // Use stored agentId if available from config
+    if (this.config.agentId) {
+      this._agentId = this.config.agentId;
+    }
+
     // Register dulu via REST
     try {
-      const httpUrl = this.config.hub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
-      const registerRes = await fetch(`${httpUrl}/api/hivemind/auth/register`, {
+      const registerRes = await fetch(`${this.httpUrl}/api/hivemind/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -73,8 +159,7 @@ export class HivemindClient {
 
     // Login
     try {
-      const httpUrl = this.config.hub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
-      const loginRes = await fetch(`${httpUrl}/api/hivemind/auth/login`, {
+      const loginRes = await fetch(`${this.httpUrl}/api/hivemind/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey: this.config.apiKey }),
@@ -104,6 +189,9 @@ export class HivemindClient {
         this.status.agentId = this._agentId;
         this.status.username = this._username;
         this.emit({ type: "connected", agentId: this._agentId, username: this._username });
+
+        // Flush queued messages
+        this.flushQueue();
 
         this.pingTimer = setInterval(() => {
           this.send({ type: "ping" });
@@ -156,6 +244,11 @@ export class HivemindClient {
   send(data: Record<string, unknown>): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
+    } else {
+      // WS not available — try REST fallback, or queue if REST also fails
+      this.sendViaREST(data).then((sent) => {
+        if (!sent) this.enqueue(data);
+      });
     }
   }
 
@@ -262,6 +355,22 @@ export class HivemindClient {
       return await res.json() as { totalAgents: number; onlineNow: number; totalLessons: number };
     } catch {
       return null;
+    }
+  }
+
+  async deregister(): Promise<boolean> {
+    if (!this.config.enabled) return false;
+    try {
+      const httpUrl = this.config.hub.replace(/^ws/, "http").replace(/\/ws.*$/, "");
+      const res = await fetch(`${httpUrl}/api/hivemind/auth/deregister`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: this.config.apiKey }),
+      });
+      const data = await res.json() as { ok: boolean };
+      return data.ok === true;
+    } catch {
+      return false;
     }
   }
 

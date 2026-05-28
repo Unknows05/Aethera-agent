@@ -4,7 +4,7 @@ import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import pc from "picocolors";
 import { cors } from "hono/cors";
-import { authenticateAgent, updateAgentConnection, updateAgentStats } from "./db.js";
+import { authenticateAgent, updateAgentConnection, updateAgentStats, pruneStaleAgents } from "./db.js";
 import { registerAgent, addSharedLesson, recordSignalVote, getAggregatedSignals, updateGlobalWeight } from "./db.js";
 import { authRoutes } from "./routes/auth.js";
 import { signalRoutes } from "./routes/signal.js";
@@ -39,6 +39,14 @@ setInterval(() => {
   }
 }, 300_000).unref();
 
+// Auto-prune stale agents (>24h since lastSeen) every 30 minutes
+setInterval(() => {
+  const pruned = pruneStaleAgents(24);
+  if (pruned > 0) {
+    console.log(pc.yellow(`  Auto-prune: removed ${pruned} stale agent(s)`));
+  }
+}, 1_800_000).unref();
+
 const PORT = Number(process.env.PORT) || 8900;
 
 // ============================================================
@@ -64,6 +72,23 @@ app.route("/api/hivemind/auth", authRoutes);
 app.route("/api/hivemind/signal", signalRoutes);
 app.route("/api/hivemind/lesson", lessonRoutes);
 app.route("/api/hivemind/stats", statsRoutes);
+
+// REST fallback endpoints for agents without WS
+app.post("/api/hivemind/trade/result", async (c) => {
+  try {
+    const { authenticateAgent, updateAgentStats } = await import("./db.js");
+    const apiKey = c.req.header("x-api-key");
+    if (!apiKey) return c.json({ ok: false, error: "Missing x-api-key header" }, 401);
+    const agent = authenticateAgent(apiKey);
+    if (!agent) return c.json({ ok: false, error: "Invalid apiKey" }, 401);
+
+    const { win, pnl } = await c.req.json() as { win?: boolean; pnl?: number };
+    updateAgentStats(agent.id, Boolean(win), Number(pnl) || 0);
+    return c.json({ ok: true });
+  } catch (e) {
+    return c.json({ ok: false, error: String(e) }, 400);
+  }
+});
 
 app.get("/api/hivemind/weights", async (c) => {
   const { getGlobalWeights } = await import("./db.js");

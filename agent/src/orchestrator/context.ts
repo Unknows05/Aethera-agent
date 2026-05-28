@@ -224,7 +224,8 @@ ${ctx.lessons.length === 0 ? "No lessons yet" : ctx.lessons.slice(0, 5).map((l) 
 ).join("\n")}
 
 You are the trading orchestrator. Based on the context above, decide what action to take.
-Available tools: wait, open_long, open_short, close_position, partial_close, trail_sl, scan_market, add_lesson.
+Available tools: wait, open_long, open_short, scan_market, add_lesson, update_config.
+Use update_config to adjust scoring thresholds or risk params when market conditions change.
 
 IMPORTANT RULES:
 - You MUST use tools to take action. Do not just explain what you would do.

@@ -49,6 +49,7 @@ const HivemindConfigSchema = z.object({
   hub: z.string().default("ws://localhost:8900/api/hivemind/ws"),
   apiKey: z.string().default(""),
   username: z.string().optional(),
+  agentId: z.string().optional(),
 });
 
 const TelegramConfigSchema = z.object({

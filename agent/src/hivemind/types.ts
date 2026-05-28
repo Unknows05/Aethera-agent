@@ -3,6 +3,7 @@ export interface HivemindConfig {
   hub: string;
   apiKey: string;
   username?: string;
+  agentId?: string;
 }
 
 export interface HivemindStatus {

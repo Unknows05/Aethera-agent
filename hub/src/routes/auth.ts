@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { registerAgent, authenticateAgent } from "../db.js";
+import { registerAgent, authenticateAgent, deregisterAgent } from "../db.js";
 
 export const authRoutes = new Hono();
 
@@ -14,6 +14,16 @@ authRoutes.post("/register", async (c) => {
     const body = registerSchema.parse(await c.req.json());
     const agent = registerAgent(body.username, body.apiKey);
     return c.json({ ok: true, agentId: agent.id });
+  } catch (e) {
+    return c.json({ ok: false, error: String(e) }, 400);
+  }
+});
+
+authRoutes.post("/deregister", async (c) => {
+  try {
+    const { apiKey } = z.object({ apiKey: z.string() }).parse(await c.req.json());
+    const removed = deregisterAgent(apiKey);
+    return c.json({ ok: removed, removed });
   } catch (e) {
     return c.json({ ok: false, error: String(e) }, 400);
   }

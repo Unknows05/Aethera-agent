@@ -226,6 +226,17 @@ export function getLeaderboard(limit = 10): Array<{
   `).all(limit) as Array<{ username: string; wins: number; losses: number; totalPnl: number; wr: number }>;
 }
 
+export function deregisterAgent(apiKey: string): boolean {
+  const result = db.prepare("DELETE FROM agents WHERE apiKey = ?").run(apiKey);
+  return result.changes > 0;
+}
+
+export function pruneStaleAgents(maxAgeHours = 24): number {
+  const cutoff = new Date(Date.now() - maxAgeHours * 3600000).toISOString();
+  const result = db.prepare("DELETE FROM agents WHERE lastSeen IS NOT NULL AND lastSeen < ?").run(cutoff);
+  return result.changes;
+}
+
 export function getNetworkStats(): {
   totalAgents: number; onlineNow: number; totalLessons: number; totalVotes24h: number;
 } {

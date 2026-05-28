@@ -16,6 +16,7 @@ import type { ToolResult } from "../orchestrator/tools.js";
 import { positionStates, recordPositionClose } from "../orchestrator/tools.js";
 import { analyzeTurn } from "../learning/post-turn-review.js";
 import { appendDecision } from "../learning/decision-log.js";
+import { recordPerformance, evolveThresholds } from "../learning/index.js";
 import type { AppContext } from "../api/server.js";
 import { loadStates } from "../state/positionStore.js";
 import { TelegramNotifier } from "../notifier/telegram.js";
@@ -81,6 +82,59 @@ export async function startServer(options?: StartOptions): Promise<void> {
 
   // ── Telegram Notifier ──
   const telegram = new TelegramNotifier(cfg.telegram ?? { enabled: false, token: "", chatId: "" });
+  telegram.setCommandContext({
+    getBalance: () => binance.getBalance(),
+    getPositions: async () => {
+      const positions = await binance.getPositionRisk();
+      return positions
+        .filter((p) => Number(p.positionAmt) !== 0)
+        .map((p) => ({
+          symbol: p.symbol,
+          side: Number(p.positionAmt) > 0 ? "LONG" : "SHORT",
+          size: Math.abs(Number(p.positionAmt)),
+          entryPrice: Number(p.entryPrice),
+          markPrice: Number(p.markPrice),
+          pnl: Number(p.unrealizedProfit),
+          leverage: Number(p.leverage),
+        }));
+    },
+    closePosition: async (symbol: string) => {
+      try {
+        const result = await tradeHandler.executeClosePosition("telegram", { symbol, reason: "Telegram /close command" });
+        if (result.success) {
+          recordPositionClose(symbol);
+        }
+        return { success: result.success, error: result.error };
+      } catch (e) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    getSignals: async () => {
+      try {
+        const scanResult = await scanner.scan();
+        return scanResult.coins
+          .filter((c) => c.direction !== "WAIT")
+          .slice(0, 10)
+          .map((c) => ({
+            symbol: c.symbol,
+            direction: c.direction,
+            confidence: c.confidence,
+            score: c.score,
+            reasons: c.reasons,
+          }));
+      } catch {
+        return [];
+      }
+    },
+    getNetworkStats: async () => {
+      if (!hc) return null;
+      try {
+        return await hc.fetchNetworkStats();
+      } catch {
+        return null;
+      }
+    },
+  });
 
   // ── Restore persistent state ──
   const saved = loadStates();
@@ -197,10 +251,27 @@ export async function startServer(options?: StartOptions): Promise<void> {
   console.log(`  Healer   : every ${healerMs / 1000}s`);
   console.log(`Ready on :${port}`);
 
+  telegram.startPolling();
   telegram.notifyStartup(balance || 0);
 
   // Helper: push cycle data ke hivemind hub + decision log
   function afterCycle(result: import("../orchestrator/index.js").CycleResult): void {
+    const ctx = result.context;
+    const marketCtx = {
+      btcPrice: ctx.market.btcPrice,
+      btcRegime: ctx.market.btcRegime,
+      btcChange24h: ctx.market.btcChange24h,
+      fundingAvg: ctx.market.fundingAvg,
+    };
+    const riskCtx = {
+      equity: ctx.account.equity,
+      openPositions: ctx.account.openPositions,
+      dailyPnl: ctx.account.dailyPnl,
+      drawdown: ctx.risk.drawdown,
+      dailyLossPct: ctx.risk.dailyLossPct,
+      cbActive: ctx.risk.circuitBreakerActive,
+    };
+
     // Decision log
     for (const d of result.decisions) {
       const action = (d.data as Record<string, unknown>)?.action as string || "unknown";
@@ -213,6 +284,29 @@ export async function startServer(options?: StartOptions): Promise<void> {
         summary: d.success
           ? `${action} ${(d.data as Record<string, unknown>)?.symbol || ""}`
           : `FAILED ${action}: ${d.error || "unknown error"}`,
+        reason: (d.data as Record<string, unknown>)?.reason as string,
+        metrics: {
+          btcPrice: marketCtx.btcPrice,
+          btcChange24h: marketCtx.btcChange24h,
+          fundingAvg: marketCtx.fundingAvg,
+          equity: riskCtx.equity,
+          openPositions: riskCtx.openPositions,
+          dailyPnl: riskCtx.dailyPnl,
+          drawdown: riskCtx.drawdown * 100,
+          dailyLossPct: riskCtx.dailyLossPct * 100,
+          signalCount: ctx.screening.length,
+        },
+        risks: [
+          riskCtx.drawdown > 0.1 ? `Drawdown ${(riskCtx.drawdown * 100).toFixed(1)}%` : "",
+          riskCtx.cbActive ? `CB active: ${ctx.risk.circuitBreakerReason}` : "",
+          ctx.goal.urgency !== "on_track" ? `Urgency: ${ctx.goal.urgency}` : "",
+          marketCtx.btcRegime === "bearish" && action.includes("long") ? "Bearish regime" : "",
+          marketCtx.btcRegime === "bullish" && action.includes("short") ? "Bullish regime" : "",
+        ].filter(Boolean),
+        rejected: ctx.screening
+          .filter((s) => s.symbol !== (d.data as Record<string, unknown>)?.symbol && s.confidence > 60)
+          .slice(0, 3)
+          .map((s) => `${s.symbol} ${s.direction} (conf ${s.confidence})`),
         error: d.error,
       });
     }
@@ -298,6 +392,9 @@ export async function startServer(options?: StartOptions): Promise<void> {
     if (result.decisions.length > 0 || label !== "Healer") {
       broadcastUpdate({ type: "cycle", agent: label.toLowerCase(), summary: result.llmResponse }, deps);
       afterCycle(result);
+
+      let closeCount = 0;
+
       for (const decision of result.decisions) {
         const action = (decision.data as Record<string, unknown>)?.action as string || "";
         const symbol = (decision.data as Record<string, unknown>)?.symbol as string || "";
@@ -308,12 +405,41 @@ export async function startServer(options?: StartOptions): Promise<void> {
           error: decision.error,
         });
         if (review.lessonsExtracted > 0) pushLessonToHivemind(decision);
+
         // Notify deploy/close
         if (decision.success && (action === "open_long" || action === "open_short")) {
           telegram.notifyDeploy(symbol, action === "open_long" ? "LONG" : "SHORT", 0, (decision.data as any)?.reason || "");
         }
-        if (decision.success && action === "close_position") {
-          telegram.notifyClose(symbol, "", 0, (decision.data as any)?.reason || "");
+
+        // Record performance on close + notify with PnL
+        if (decision.success && (action === "close_position" || action === "partial_close")) {
+          const pnl = (decision.data as Record<string, unknown>)?.pnl as number || 0;
+          const side = (decision.data as Record<string, unknown>)?.side as string || "";
+          const entryPrice = (decision.data as Record<string, unknown>)?.entryPrice as number || 0;
+          const reason = (decision.data as Record<string, unknown>)?.reason as string || "";
+          const exitPct = entryPrice > 0 ? (pnl / entryPrice) * 100 : 0;
+
+          recordPerformance({
+            symbol,
+            direction: side as "LONG" | "SHORT",
+            pnlPct: exitPct,
+            pnlUsd: pnl,
+            exitReason: reason,
+            regime: result.context.market.btcRegime,
+            confidence: (decision.data as Record<string, unknown>)?.confidence as number,
+          });
+
+          telegram.notifyClose(symbol, side, pnl, reason);
+          closeCount++;
+        }
+      }
+
+      // Evolve thresholds from accumulated performance
+      if (closeCount > 0 || label === "Healer") {
+        const evolved = evolveThresholds();
+        if (evolved.changes.length > 0) {
+          console.log(`  └─ Thresholds evolved: ${evolved.changes.join(" | ")}`);
+          await telegram.send(`🧬 <b>Threshold Evolution</b>\n${evolved.changes.join("\n")}`);
         }
       }
     }
@@ -357,7 +483,11 @@ export async function startServer(options?: StartOptions): Promise<void> {
     clearInterval(hunterInterval);
     clearInterval(healerInterval);
     if (tuiProcess) tuiProcess.kill();
+    telegram.stopPolling();
     if (hc) {
+      try {
+        await hc.deregister();
+      } catch { /* ignore */ }
       try {
         hc.disconnect();
       } catch { /* ignore */ }

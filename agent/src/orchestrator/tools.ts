@@ -1,6 +1,8 @@
 import type { Context } from "./context.js";
 import { saveStates } from "../state/positionStore.js";
 
+export type AgentType = "hunter" | "healer";
+
 export interface ToolDefinition {
   type: "function";
   function: {
@@ -191,15 +193,76 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "update_config",
+      description: "Update configuration parameters at runtime. Changes persist to disk. Only specific keys can be changed.",
+      parameters: {
+        type: "object",
+        properties: {
+          longMinScore: {
+            type: "number",
+            description: "Minimum score for LONG entries (45-85). Higher = stricter.",
+            minimum: 45,
+            maximum: 85,
+          },
+          shortMinScore: {
+            type: "number",
+            description: "Minimum score for SHORT entries (45-85). Higher = stricter.",
+            minimum: 45,
+            maximum: 85,
+          },
+          highConfidence: {
+            type: "number",
+            description: "Threshold for high confidence trades (50-95).",
+            minimum: 50,
+            maximum: 95,
+          },
+          maxRisk: {
+            type: "number",
+            description: "Max risk per trade as fraction of equity (0.05-0.50). Example: 0.10 = 10%.",
+            minimum: 0.05,
+            maximum: 0.5,
+          },
+          maxLeverage: {
+            type: "number",
+            description: "Max leverage for new positions (1-10).",
+            minimum: 1,
+            maximum: 10,
+          },
+          maxTrades: {
+            type: "number",
+            description: "Max trades per day (1-10).",
+            minimum: 1,
+            maximum: 10,
+          },
+        },
+      },
+    },
+  },
 ];
 
+const ALL_TOOL_NAMES = new Set(["open_long", "open_short", "scan_market", "add_lesson", "wait", "close_position", "partial_close", "trail_sl", "update_config"]);
+const HUNTER_TOOL_NAMES = new Set(["open_long", "open_short", "scan_market", "add_lesson", "wait", "update_config"]);
+const HEALER_TOOL_NAMES = new Set(["close_position", "partial_close", "trail_sl", "wait", "update_config"]);
+
 export const HUNTER_TOOLS = TOOL_DEFINITIONS.filter(
-  (t) => ["open_long", "open_short", "scan_market", "add_lesson", "close_position", "partial_close", "trail_sl", "wait"].includes(t.function.name),
+  (t) => HUNTER_TOOL_NAMES.has(t.function.name),
 );
 
 export const HEALER_TOOLS = TOOL_DEFINITIONS.filter(
-  (t) => ["close_position", "partial_close", "trail_sl", "wait"].includes(t.function.name),
+  (t) => HEALER_TOOL_NAMES.has(t.function.name),
 );
+
+export function getToolSet(agentType: AgentType): ToolDefinition[] {
+  return agentType === "hunter" ? HUNTER_TOOLS : HEALER_TOOLS;
+}
+
+export function isToolAllowedForAgent(action: string, agentType: AgentType): boolean {
+  const allowed = agentType === "hunter" ? HUNTER_TOOL_NAMES : HEALER_TOOL_NAMES;
+  return allowed.has(action);
+}
 
 export interface ToolCall {
   id: string;

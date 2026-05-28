@@ -7,6 +7,4 @@ data/
 *.pid
 coverage/
 .vite/
-guide/
 AGENTS.md
-hivemind-dashboard/

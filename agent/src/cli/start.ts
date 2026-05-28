@@ -66,6 +66,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
   const wsClients = new Set<import("ws").default>();
   const { port } = createServer({
     config: cfg,
+    binance,
     scanner,
     tradeHandler,
     startTime: Date.now(),
@@ -74,6 +75,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
 
   const deps: AppContext = {
     config: cfg,
+    binance,
     scanner,
     tradeHandler,
     startTime: Date.now(),

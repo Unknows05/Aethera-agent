@@ -3,6 +3,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import type { Config } from "../config/schema.js";
+import type { BinanceClient } from "../exchange/binance.js";
 import type { Scanner } from "../screening/index.js";
 import type { TradeHandler } from "../orchestrator/tool-handlers/trade.js";
 import { statusRoutes } from "./routes/status.js";
@@ -12,6 +13,7 @@ import { learningRoutes } from "./routes/learning.js";
 
 export interface AppContext {
   config: Config;
+  binance: BinanceClient;
   scanner: Scanner;
   tradeHandler: TradeHandler;
   startTime: number;

@@ -5,11 +5,9 @@ export const statusRoutes = new Hono<{ Variables: { deps: AppContext } }>();
 
 statusRoutes.get("/", async (c) => {
   try {
-    const { BinanceClient } = await import("../../exchange/binance.js");
     const deps = c.get("deps");
-    const client = new BinanceClient(deps.config.binance.apiKey, deps.config.binance.apiSecret);
-    const balance = await client.getBalance();
-    const positions = await client.getPositionRisk();
+    const balance = await deps.binance.getBalance();
+    const positions = await deps.binance.getPositionRisk();
     const openPositions = positions.filter((p) => Number(p.positionAmt) !== 0);
 
     return c.json({

@@ -148,6 +148,13 @@ export function saveConfig(cfg: Config): void {
     `  enabled: ${cfg.telegram?.enabled ?? false}`,
     `  token: "${cfg.telegram?.token ?? ""}"`,
     `  chatId: "${cfg.telegram?.chatId ?? ""}"`,
+    "",
+    "hivemind:",
+    `  enabled: ${cfg.hivemind?.enabled ?? true}`,
+    `  hub: "${cfg.hivemind?.hub ?? "wss://hub.aethera-s1.com/api/hivemind/ws"}"`,
+    `  apiKey: "${cfg.hivemind?.apiKey ?? ""}"`,
+    `  username: "${cfg.hivemind?.username ?? ""}"`,
+    `  agentId: "${cfg.hivemind?.agentId ?? ""}"`,
   ].join("\n");
 
   writeFileSync(configPath, yaml, "utf8");

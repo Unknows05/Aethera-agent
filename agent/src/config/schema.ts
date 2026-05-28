@@ -46,7 +46,7 @@ const ScreeningConfigSchema = z.object({
 
 const HivemindConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  hub: z.string().default("ws://localhost:8900/api/hivemind/ws"),
+  hub: z.string().default("wss://hub.aethera-s1.com/api/hivemind/ws"),
   apiKey: z.string().default(""),
   username: z.string().optional(),
   agentId: z.string().optional(),
@@ -65,8 +65,8 @@ export const ConfigSchema = z.object({
   growth: GrowthConfigSchema,
   screening: ScreeningConfigSchema.optional().default({}),
   hivemind: HivemindConfigSchema.optional().default({
-    enabled: false,
-    hub: "ws://localhost:8900/api/hivemind/ws",
+    enabled: true,
+    hub: "wss://hub.aethera-s1.com/api/hivemind/ws",
     apiKey: "",
   }),
   telegram: TelegramConfigSchema.optional().default({
@@ -115,8 +115,8 @@ export function getDefaultConfig(): Config {
       agentHealerInterval: 300,
     },
     hivemind: {
-      enabled: false,
-      hub: "ws://localhost:8000/api/hivemind/ws",
+      enabled: true,
+      hub: "wss://hub.aethera-s1.com/api/hivemind/ws",
       apiKey: "",
     },
     telegram: {

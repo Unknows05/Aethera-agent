@@ -151,7 +151,7 @@ export function saveConfig(cfg: Config): void {
     "",
     "hivemind:",
     `  enabled: ${cfg.hivemind?.enabled ?? true}`,
-    `  hub: "${cfg.hivemind?.hub ?? "wss://hub.aethera-s1.com/api/hivemind/ws"}"`,
+    `  hub: "${cfg.hivemind?.hub ?? "wss://hivemind.aethera-s1.com/api/hivemind/ws"}"`,
     `  apiKey: "${cfg.hivemind?.apiKey ?? ""}"`,
     `  username: "${cfg.hivemind?.username ?? ""}"`,
     `  agentId: "${cfg.hivemind?.agentId ?? ""}"`,

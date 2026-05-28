@@ -46,7 +46,7 @@ const ScreeningConfigSchema = z.object({
 
 const HivemindConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  hub: z.string().default("wss://hub.aethera-s1.com/api/hivemind/ws"),
+  hub: z.string().default("wss://hivemind.aethera-s1.com/api/hivemind/ws"),
   apiKey: z.string().default(""),
   username: z.string().optional(),
   agentId: z.string().optional(),
@@ -66,7 +66,7 @@ export const ConfigSchema = z.object({
   screening: ScreeningConfigSchema.optional().default({}),
   hivemind: HivemindConfigSchema.optional().default({
     enabled: true,
-    hub: "wss://hub.aethera-s1.com/api/hivemind/ws",
+    hub: "wss://hivemind.aethera-s1.com/api/hivemind/ws",
     apiKey: "",
   }),
   telegram: TelegramConfigSchema.optional().default({
@@ -116,7 +116,7 @@ export function getDefaultConfig(): Config {
     },
     hivemind: {
       enabled: true,
-      hub: "wss://hub.aethera-s1.com/api/hivemind/ws",
+    hub: "wss://hivemind.aethera-s1.com/api/hivemind/ws",
       apiKey: "",
     },
     telegram: {

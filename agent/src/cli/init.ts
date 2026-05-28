@@ -9,7 +9,7 @@ import { OpenRouterClient } from "../llm/client.js";
 import { loadConfig, saveConfig } from "../config/index.js";
 import { getDefaultConfig, type Config, type EquityTier } from "../config/schema.js";
 
-const DEFAULT_HUB_URL = "wss://hub.aethera-s1.com/api/hivemind/ws";
+const DEFAULT_HUB_URL = "wss://hivemind.aethera-s1.com/api/hivemind/ws";
 
 function calculateDailyTarget(
   currentBalance: number,

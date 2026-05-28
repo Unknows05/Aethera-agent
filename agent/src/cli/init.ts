@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { BinanceClient, getPublicIP } from "../exchange/binance.js";
 import { OpenRouterClient } from "../llm/client.js";
-import { saveConfig } from "../config/index.js";
+import { loadConfig, saveConfig } from "../config/index.js";
 import { getDefaultConfig, type Config, type EquityTier } from "../config/schema.js";
 
 function calculateDailyTarget(
@@ -68,6 +68,65 @@ function generateTiers(
   return tiers;
 }
 
+async function initDatabases(): Promise<void> {
+  const s = p.spinner();
+  s.start("Initializing databases...");
+  const dataDir = join(fileURLToPath(import.meta.url), "..", "..", "..", "data");
+  mkdirSync(dataDir, { recursive: true });
+
+  const db = new Database(join(dataDir, "screener.db"));
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS signals (
+      id TEXT PRIMARY KEY,
+      timestamp INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      score REAL NOT NULL,
+      confidence REAL NOT NULL,
+      entry_price REAL,
+      sl REAL,
+      tp REAL,
+      regime TEXT,
+      leverage INTEGER,
+      result TEXT,
+      exit_price REAL,
+      exit_reason TEXT,
+      pnl_pct REAL,
+      pnl_usd REAL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
+    CREATE INDEX IF NOT EXISTS idx_signals_result ON signals(result);
+
+    CREATE TABLE IF NOT EXISTS daily_stats (
+      date TEXT PRIMARY KEY,
+      total_trades INTEGER DEFAULT 0,
+      wins INTEGER DEFAULT 0,
+      losses INTEGER DEFAULT 0,
+      total_pnl REAL DEFAULT 0,
+      win_rate REAL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  db.close();
+
+  const memDb = new Database(join(dataDir, "memory.db"));
+  memDb.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+      content, category, symbol, timestamp UNINDEXED
+    );
+  `);
+  memDb.close();
+
+  writeFileSync(join(dataDir, "lessons.json"), JSON.stringify({ lessons: [], performance: [] }, null, 2));
+  writeFileSync(join(dataDir, "pool-memory.json"), "{}");
+  writeFileSync(join(dataDir, "signal-weights.json"), JSON.stringify({ weights: {}, last_recalc: null, recalc_count: 0, history: [] }, null, 2));
+  writeFileSync(join(dataDir, "skill-usage.json"), "{}");
+
+  s.stop(pc.green("✓ Databases initialized"));
+}
+
 export async function initWizard(): Promise<void> {
   console.clear();
 
@@ -77,6 +136,35 @@ export async function initWizard(): Promise<void> {
   const isBun = typeof globalThis !== "undefined" && "Bun" in globalThis;
   const runtimeInfo = `✓ ${isBun ? "Bun" : "Node.js"} ${process.version}`;
   p.log.step(runtimeInfo);
+
+  // ── Check existing config ──
+  let existingConfig: Config | null = null;
+  try {
+    const cfg = loadConfig();
+    if (cfg.binance?.apiKey && cfg.binance.apiKey.length > 10 && cfg.openrouter?.apiKey) {
+      existingConfig = cfg;
+    }
+  } catch { /* no existing config */ }
+
+  if (existingConfig) {
+    p.log.info(pc.dim(`Existing config found: balance $${existingConfig.growth?.targetEquity?.toFixed(0) ?? "?"}`));
+    const action = await p.select({
+      message: "Config already exists. What do you want to do?",
+      options: [
+        { value: "keep", label: "Keep existing config", hint: "just re-init databases" },
+        { value: "reconfigure", label: "Re-configure from scratch", hint: "overwrite everything" },
+      ],
+    });
+    if (p.isCancel(action)) process.exit(0);
+    if (action === "keep") {
+      p.log.step(pc.green("✓ Keeping existing config — re-initializing databases..."));
+      await initDatabases();
+      p.log.success(pc.bold("Done! Config unchanged."));
+      p.log.info(`  Start : ${pc.cyan("aethera start")}`);
+      p.outro("Done!");
+      return;
+    }
+  }
 
   // ── Step 1: Binance Futures ──
   p.log.step(pc.bold("Step 1/4: Binance Futures"));
@@ -145,7 +233,6 @@ export async function initWizard(): Promise<void> {
   let orConnected = false;
   let orClient: OpenRouterClient | null = null;
   let openRouterKey = "";
-  let availableModels: Array<{ id: string; name: string }> = [];
 
   while (!orConnected) {
     const orInput = await p.password({
@@ -161,7 +248,7 @@ export async function initWizard(): Promise<void> {
     }
 
     const s = p.spinner();
-    s.start("Fetching available models...");
+    s.start("Verifying API key...");
 
     try {
       const client = new OpenRouterClient({ apiKey: orInput as string });
@@ -170,16 +257,9 @@ export async function initWizard(): Promise<void> {
       if (result.success) {
         orClient = client;
         openRouterKey = orInput as string;
-        availableModels = (await client.fetchModels())
-          .map((m) => ({ id: m.id, name: `${m.id} ($${(Number(m.pricing.prompt) * 1e6).toFixed(2)}/M tokens)` }))
-          .sort((a, b) => {
-            const aFree = a.id.includes("free") ? 1 : 0;
-            const bFree = b.id.includes("free") ? 1 : 0;
-            return bFree - aFree;
-          });
 
         orConnected = true;
-        s.stop(pc.green(`✓ Connected! ${availableModels.length} models available`));
+        s.stop(pc.green("✓ OpenRouter API key valid"));
       } else {
         s.stop(pc.red(`✗ Connection failed: ${result.error || "Invalid API Key"}`));
       }
@@ -490,61 +570,7 @@ ${pc.bold("Hivemind:")}
   saveConfig(cfg);
   s.stop(pc.green("✓ Config saved to config.yaml"));
 
-  s.start("Initializing databases...");
-  const dataDir = join(fileURLToPath(import.meta.url), "..", "..", "..", "data");
-  mkdirSync(dataDir, { recursive: true });
-
-  const db = new Database(join(dataDir, "screener.db"));
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS signals (
-      id TEXT PRIMARY KEY,
-      timestamp INTEGER NOT NULL,
-      symbol TEXT NOT NULL,
-      direction TEXT NOT NULL,
-      score REAL NOT NULL,
-      confidence REAL NOT NULL,
-      entry_price REAL,
-      sl REAL,
-      tp REAL,
-      regime TEXT,
-      leverage INTEGER,
-      result TEXT,
-      exit_price REAL,
-      exit_reason TEXT,
-      pnl_pct REAL,
-      pnl_usd REAL,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
-    CREATE INDEX IF NOT EXISTS idx_signals_result ON signals(result);
-
-    CREATE TABLE IF NOT EXISTS daily_stats (
-      date TEXT PRIMARY KEY,
-      total_trades INTEGER DEFAULT 0,
-      wins INTEGER DEFAULT 0,
-      losses INTEGER DEFAULT 0,
-      total_pnl REAL DEFAULT 0,
-      win_rate REAL,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
-  db.close();
-
-  const memDb = new Database(join(dataDir, "memory.db"));
-  memDb.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-      content, category, symbol, timestamp UNINDEXED
-    );
-  `);
-  memDb.close();
-
-  writeFileSync(join(dataDir, "lessons.json"), JSON.stringify({ lessons: [], performance: [] }, null, 2));
-  writeFileSync(join(dataDir, "pool-memory.json"), "{}");
-  writeFileSync(join(dataDir, "signal-weights.json"), JSON.stringify({ weights: {}, last_recalc: null, recalc_count: 0, history: [] }, null, 2));
-  writeFileSync(join(dataDir, "skill-usage.json"), "{}");
-
-  s.stop(pc.green("✓ Databases initialized"));
+  await initDatabases();
 
   p.log.success(pc.bold("Setup complete!"));
   p.log.info(`  Config  : config.yaml`);

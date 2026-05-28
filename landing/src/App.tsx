@@ -49,6 +49,7 @@ function App() {
 
   const navLinks = [
     { href: '/features', label: 'Features' },
+    { href: '/hivemind', label: 'Hivemind' },
     { href: '/install', label: 'Install' },
     { href: '/docs/', label: 'Docs' },
     { href: 'https://github.com/Unknows05/Aethera-agent', label: 'GitHub', external: true },

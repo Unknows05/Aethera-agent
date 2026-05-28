@@ -323,7 +323,16 @@ export async function initWizard(): Promise<void> {
       s.start(`Testing ${model}...`);
       const test = await orClient!.testModel(model);
       if (test.ok) {
-        s.stop(pc.green(`✓ ${model} responded in ${test.latencyMs}ms`));
+        const support = test.toolCallSupport
+          ? pc.green("✅tools")
+          : pc.red("⚠️NO tool calling — will use JSON fallback");
+        s.stop(pc.green(`✓ ${model} responded in ${test.latencyMs}ms ${support}`));
+        if (!test.toolCallSupport) {
+          p.log.warn(`${pc.red(model)} tidak mendukung function calling. Agent akan fallback ke JSON text mode (kurang reliable). Rekomendasi: pilih model dengan label ✅tools.`);
+          const proceed = await p.confirm({ message: "Tetap pakai model ini?", initialValue: false });
+          if (p.isCancel(proceed)) process.exit(0);
+          if (!proceed) continue;
+        }
         return model;
       }
       s.stop(pc.yellow(`⚠ ${model}: ${test.error || "no response"}`));

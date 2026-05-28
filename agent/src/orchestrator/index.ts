@@ -481,17 +481,50 @@ export async function runHunterCycle(
 
   // Ringkas llmResponse — ambil cuma content + tool calls terakhir
   let summary = "No action taken";
+  let llmReason = "";
   if (lastRawResponse) {
     try {
       const parsed = lastRawResponse as Record<string, unknown>;
       const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
-      const msg = choices?.[0]?.message as Record<string, unknown> | undefined;
-      if (msg?.content && typeof msg.content === "string") summary = msg.content.slice(0, 300);
-      else if (allDecisions.length > 0) {
-        const actions = allDecisions.map((d) => d.data?.action || d.error || "?").filter(Boolean).join(", ");
-        summary = `Executed: ${actions}`;
+      const message = choices?.[0]?.message as Record<string, unknown> | undefined;
+      if (message?.content) {
+        summary = String(message.content).slice(0, 300);
+        llmReason = summary;
       }
     } catch { /* fallback */ }
+  }
+
+  // Fallback auto-execute: jika LLM tidak menghasilkan keputusan, execute berdasarkan scanner signal
+  if (allDecisions.length === 0 && scannedSignals.length > 0) {
+    const bestSignals = scannedSignals
+      .filter((s) => s.direction !== "WAIT")
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, 2);
+
+    if (bestSignals.length > 0) {
+      const fallbackReason = llmReason
+        ? `Model responded with text only (no tool calls): "${llmReason.slice(0, 100)}". Falling back to auto-execute.`
+        : `Model produced 0 tool calls. Falling back to auto-execute.`;
+
+      for (const signal of bestSignals) {
+        const fakeCall: ToolCall = {
+          id: `fallback_${signal.symbol}_${Date.now()}`,
+          type: "function",
+          function: {
+            name: signal.direction === "LONG" ? "open_long" : "open_short",
+            arguments: JSON.stringify({
+              symbol: signal.symbol,
+              confidence: signal.confidence,
+              reason: `AUTO: ${signal.reasons?.[0] || "signal detected"} (confidence ${signal.confidence})`,
+            }),
+          },
+        };
+        const fallbackCtx = { ...ctx, screening: scannedSignals };
+        const result = await executeToolCall(fakeCall, fallbackCtx, orchestrator.tradeHandler);
+        allDecisions.push(result);
+        summary = `${fallbackReason} Auto-executed ${signal.direction} ${signal.symbol} (confidence ${signal.confidence}).`;
+      }
+    }
   }
 
   return {

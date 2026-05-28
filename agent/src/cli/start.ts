@@ -12,6 +12,7 @@ import { HivemindClient } from "../hivemind/client.js";
 import { createServer, broadcastUpdate } from "../api/server.js";
 import { runHunterCycle, runHealerCycle } from "../orchestrator/index.js";
 import type { OrchestratorConfig } from "../orchestrator/index.js";
+import type { ToolResult } from "../orchestrator/tools.js";
 import { analyzeTurn } from "../learning/post-turn-review.js";
 import { appendDecision } from "../learning/decision-log.js";
 import type { AppContext } from "../api/server.js";
@@ -225,6 +226,30 @@ export async function startServer(options?: StartOptions): Promise<void> {
     }
   }
 
+  function logCycle(agent: string, result: { agent: string; decisions: ToolResult[]; llmResponse: unknown; durationMs: number }): void {
+    const count = result.decisions.length;
+    const successes = result.decisions.filter((d) => d.success).length;
+    const errors = result.decisions.filter((d) => !d.success);
+    const summary = result.llmResponse ? String(result.llmResponse).slice(0, 200) : "";
+
+    if (count === 0) {
+      console.log(`  └─ ${agent}: 0 decisions — no signals or model not responding (${result.durationMs}ms)`);
+      return;
+    }
+
+    const actionSummary = result.decisions
+      .map((d) => {
+        const action = (d.data as Record<string, unknown>)?.action as string || "unknown";
+        const symbol = (d.data as Record<string, unknown>)?.symbol as string || "";
+        const err = d.error || "";
+        return d.success ? `${action} ${symbol}` : `${action} ${symbol} FAILED: ${err.slice(0, 60)}`;
+      })
+      .join(" | ");
+
+    console.log(`  └─ ${agent}: ${count} decisions (${successes} ok, ${errors.length} fail) — ${actionSummary} (${result.durationMs}ms)`);
+    if (summary) console.log(`       └─ ${summary}`);
+  }
+
   const hunterInterval = setInterval(async () => {
     console.log(`[${new Date().toISOString()}] Hunter cycle...`);
     try {
@@ -240,7 +265,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
         });
         if (review.lessonsExtracted > 0) pushLessonToHivemind(decision);
       }
-      console.log(`  └─ ${result.decisions.length} decisions (${result.durationMs}ms)`);
+      logCycle("Hunter", result);
     } catch (e) {
       console.error(`[${new Date().toISOString()}] Hunter error:`, e);
     }
@@ -263,7 +288,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
           if (review.lessonsExtracted > 0) pushLessonToHivemind(decision);
         }
       }
-      console.log(`  └─ ${result.decisions.length} decisions (${result.durationMs}ms)`);
+      logCycle("Healer", result);
     } catch (e) {
       console.error(`[${new Date().toISOString()}] Healer error:`, e);
     }
@@ -276,7 +301,7 @@ export async function startServer(options?: StartOptions): Promise<void> {
       const result = await runHunterCycle(orchestrator, startEquity, getDaysElapsed());
       broadcastUpdate({ type: "cycle", agent: "hunter", summary: result.llmResponse }, deps);
       afterCycle(result);
-      console.log(`  └─ ${result.decisions.length} decisions (${result.durationMs}ms)`);
+      logCycle("Hunter", result);
     } catch (e) {
       console.error(`[${new Date().toISOString()}] Initial hunter error:`, e);
     }

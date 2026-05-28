@@ -186,9 +186,10 @@ export class OpenRouterClient {
     }
   }
 
-  async testModel(modelId: string): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
+  async testModel(modelId: string): Promise<{ ok: boolean; latencyMs: number; error?: string; toolCallSupport?: boolean }> {
     const start = Date.now();
     try {
+      // Test 1: basic response
       const res = await fetch(`${OPENROUTER_API}/chat/completions`, {
         method: "POST",
         headers: {
@@ -217,7 +218,47 @@ export class OpenRouterClient {
         } catch { shortMsg = `${res.status}: ${text.slice(0, 120)}`; }
         return { ok: false, latencyMs: Date.now() - start, error: shortMsg };
       }
-      return { ok: true, latencyMs: Date.now() - start };
+
+      // Test 2: tool/function calling support
+      let toolCallSupport = false;
+      try {
+        const toolRes = await fetch(`${OPENROUTER_API}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+            "HTTP-Referer": "https://github.com/Unknows05/Aethera",
+            "X-Title": "Aethera v2",
+          },
+          body: JSON.stringify({
+            model: modelId,
+            messages: [{ role: "user", content: "Call the function do_nothing with reason 'test'" }],
+            tools: [{
+              type: "function",
+              function: {
+                name: "do_nothing",
+                description: "Do nothing, just acknowledge",
+                parameters: {
+                  type: "object",
+                  properties: { reason: { type: "string" } },
+                  required: ["reason"],
+                },
+              },
+            }],
+            tool_choice: "auto",
+            max_tokens: 50,
+          }),
+        });
+        if (toolRes.ok) {
+          const data = (await toolRes.json()) as Record<string, unknown>;
+          const choices = data.choices as Array<Record<string, unknown>> | undefined;
+          const msg = choices?.[0]?.message as Record<string, unknown> | undefined;
+          const toolCalls = msg?.tool_calls as Array<unknown> | undefined;
+          toolCallSupport = Array.isArray(toolCalls) && toolCalls.length > 0;
+        }
+      } catch { /* tool test non-fatal */ }
+
+      return { ok: true, latencyMs: Date.now() - start, toolCallSupport };
     } catch (e) {
       return { ok: false, latencyMs: Date.now() - start, error: e instanceof Error ? e.message : String(e) };
     }

@@ -269,6 +269,7 @@ export async function initWizard(): Promise<void> {
   }
 
   const modelChoices = [
+    { value: "__browse__", label: "Browse all models from OpenRouter...", hint: "fetch live" },
     // ── FREE (Tool Calling ✅) ──
     { value: "google/gemini-2.0-flash", label: "google/gemini-2.0-flash — ★ Fast & free", hint: "FREE ✅tools" },
     { value: "meta-llama/llama-3.1-8b-instruct", label: "meta-llama/llama-3.1-8b-instruct — Free", hint: "FREE ✅tools" },
@@ -287,27 +288,40 @@ export async function initWizard(): Promise<void> {
     { value: "__custom__", label: "Type custom model ID...", hint: "" },
   ];
 
-  async function pickModel(label: string, choices: Array<{ value: string; label: string; hint?: string }>): Promise<string> {
+  async function pickModel(label: string): Promise<string> {
     while (true) {
-      const raw = await p.select({ message: label, options: choices });
-      if (p.isCancel(raw)) {
-        p.cancel("Setup dibatalkan.");
-        process.exit(0);
-      }
+      const raw = await p.select({ message: label, options: modelChoices });
+      if (p.isCancel(raw)) { p.cancel("Setup dibatalkan."); process.exit(0); }
+
       let model = raw as string;
-      if (model === "__custom__") {
-        const custom = await p.text({
-          message: "Enter model ID:",
-          validate: (val) => (!val ? "Model ID wajib diisi" : undefined),
-        });
+      if (model === "__browse__") {
+        const s = p.spinner();
+        s.start("Fetching models from OpenRouter...");
+        try {
+          const models = await orClient!.fetchModels();
+          const fetchedRaw = models
+            .map((m) => ({
+              value: m.id,
+              label: `${m.id} ($${(Number(m.pricing.prompt) * 1e6).toFixed(2)}/M)${m.id.includes("free") ? " FREE" : ""}`,
+            }))
+            .sort((a, b) => (a.label.includes("FREE") ? -1 : b.label.includes("FREE") ? 1 : 0));
+          s.stop(pc.green(`✓ ${fetchedRaw.length} models loaded`));
+          const picked = await p.select({ message: label, options: fetchedRaw });
+          if (p.isCancel(picked)) process.exit(0);
+          model = picked as string;
+        } catch (e) {
+          s.stop(pc.red(`✗ Failed to fetch: ${e instanceof Error ? e.message : String(e)}`));
+          continue;
+        }
+      } else if (model === "__custom__") {
+        const custom = await p.text({ message: "Enter model ID:", validate: (val) => (!val ? "Model ID wajib diisi" : undefined) });
         if (p.isCancel(custom)) process.exit(0);
         model = custom as string;
       }
+
       const s = p.spinner();
       s.start(`Testing ${model}...`);
-      const test = orClient
-        ? await orClient.testModel(model)
-        : { ok: false as const, latencyMs: 0, error: "No OpenRouter connection" };
+      const test = await orClient!.testModel(model);
       if (test.ok) {
         s.stop(pc.green(`✓ ${model} responded in ${test.latencyMs}ms`));
         return model;
@@ -322,12 +336,12 @@ export async function initWizard(): Promise<void> {
         ],
       });
       if (action === "retry") continue;
-      if (action === "skip") return model;
-      // "change" → loop back to model selection
+      if (action === "change") continue;
+      return model;
     }
   }
 
-  const selectedPrimary = await pickModel("Select Primary Model (Hunter/Orchestrator):", modelChoices);
+  const selectedPrimary = await pickModel("Select Primary Model (Hunter/Orchestrator):");
 
   let selectedHealer: string;
   const healerChoice = await p.select({
@@ -346,9 +360,7 @@ export async function initWizard(): Promise<void> {
   if (healerChoice === "__same__") {
     selectedHealer = selectedPrimary;
   } else {
-    selectedHealer = await pickModel("", [
-      { value: healerChoice as string, label: healerChoice as string, hint: "" },
-    ]);
+    selectedHealer = healerChoice as string;
   }
 
   let selectedCurator: string;
@@ -367,9 +379,7 @@ export async function initWizard(): Promise<void> {
   if (curatorChoice === "__same__") {
     selectedCurator = selectedPrimary;
   } else {
-    selectedCurator = await pickModel("", [
-      { value: curatorChoice as string, label: curatorChoice as string, hint: "" },
-    ]);
+    selectedCurator = curatorChoice as string;
   }
 
   // ── Step 3: Growth Strategy ──

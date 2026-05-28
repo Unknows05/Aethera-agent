@@ -68,6 +68,12 @@ async function main() {
   }
 
   switch (command) {
+    case "model": {
+      const { changeModel } = await import("./model.js");
+      await changeModel();
+      break;
+    }
+
     case "init":
       const { initWizard } = await import("./init.js");
       await initWizard();
@@ -281,6 +287,7 @@ function showHelp() {
 
   COMMANDS
     init              Setup wizard (API keys, config, DB)
+    model             Change LLM model (no re-setup needed)
     start             Start API server + TUI
     stop              Stop all processes
     status            View system status

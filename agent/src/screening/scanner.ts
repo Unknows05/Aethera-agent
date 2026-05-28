@@ -29,6 +29,9 @@ export class Scanner {
   private adxThreshold: number;
   private enrichTopN: number;
 
+  // Per-cycle cache — avoids duplicate klines requests
+  private klineCache = new Map<string, Candle[]>();
+
   constructor(client: BinanceClient, config?: {
     timeframes?: Timeframe[];
     maxCoins?: number;
@@ -44,8 +47,17 @@ export class Scanner {
     this.enrichTopN = config?.enrichTopN ?? 10;
   }
 
+  private async cachedKlines(symbol: string, tf: string, limit = 100): Promise<Candle[]> {
+    const key = `${symbol}:${tf}`;
+    if (this.klineCache.has(key)) return this.klineCache.get(key)!;
+    const candles = await this.client.getKlines(symbol, tf, limit);
+    this.klineCache.set(key, candles);
+    return candles;
+  }
+
   async scan(): Promise<ScanResult> {
     const startTime = Date.now();
+    this.klineCache.clear();
 
     // Layer 1: Discover all coins
     const allSymbols = await this.discoverCoins();
@@ -117,7 +129,7 @@ export class Scanner {
           try {
             const tfData = await Promise.all(
               this.timeframes.map(async (tf) => {
-                const candles = await this.client.getKlines(symbol, tf, 100);
+                const candles = await this.cachedKlines(symbol, tf, 100);
                 return {
                   timeframe: tf,
                   candles: candles as Candle[],

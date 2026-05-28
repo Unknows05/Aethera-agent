@@ -1,6 +1,16 @@
 import { createHmac } from "node:crypto";
+import { globalLimiter } from "./rateLimiter.js";
 
 const BASE = "https://fapi.binance.com";
+
+function isBanned(status: number): boolean {
+  return status === 418;
+}
+
+async function rateLimitedFetch(url: string, init?: RequestInit): Promise<Response> {
+  await globalLimiter.acquire();
+  return fetch(url, init);
+}
 
 interface BinanceResponse {
   code?: number;
@@ -63,8 +73,8 @@ async function request<T>(
 
   const url = `${BASE}${path}?${fullQuery}&signature=${signature}`;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch(url, {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const res = await rateLimitedFetch(url, {
       method,
       headers: {
         "X-MBX-APIKEY": apiKey,
@@ -75,7 +85,18 @@ async function request<T>(
     if (res.ok) return res.json() as Promise<T>;
 
     const body = (await res.json()) as BinanceResponse;
-    if (res.status === 429 && attempt < 2) {
+
+    // 418 = IP banned — tunggu 60s sebelum retry
+    if (isBanned(res.status)) {
+      const banUntil = body.msg?.match(/banned until (\d+)/);
+      const waitMs = banUntil ? Math.min(Number(banUntil[1]) - Date.now() + 1000, 120_000) : 60_000;
+      if (waitMs > 0 && attempt < 4) {
+        await new Promise((r) => setTimeout(r, Math.max(waitMs, 10_000)));
+        continue;
+      }
+    }
+
+    if (res.status === 429 && attempt < 4) {
       await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
       continue;
     }
@@ -92,11 +113,19 @@ async function publicRequest<T>(method: string, path: string, params: Record<str
     .join("&");
   const url = `${BASE}${path}${queryString ? `?${queryString}` : ""}`;
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const r = await fetch(url);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const r = await rateLimitedFetch(url);
     if (r.ok) return r.json() as Promise<T>;
 
-    if (r.status === 429 && attempt < 2) {
+    // 418 = IP banned — tunggu 60s sebelum retry
+    if (isBanned(r.status)) {
+      if (attempt < 4) {
+        await new Promise((r) => setTimeout(r, 60_000));
+        continue;
+      }
+    }
+
+    if (r.status === 429 && attempt < 4) {
       await new Promise((resolve) => setTimeout(resolve, 2000 * (attempt + 1)));
       continue;
     }
@@ -155,8 +184,27 @@ export class BinanceClient {
     }));
   }
 
-  async getExchangeInfo(): Promise<{ symbols: Array<{ symbol: string; contractType: string; status: string; quoteAsset: string }> }> {
+  async getExchangeInfo(): Promise<{ symbols: Array<{ symbol: string; contractType: string; status: string; quoteAsset: string; filters: Array<{ filterType: string; stepSize?: string; minQty?: string; tickSize?: string }> }> }> {
     return publicRequest("GET", "/fapi/v1/exchangeInfo");
+  }
+
+  private lotSizeCache = new Map<string, number>();
+
+  async getLotStepSize(symbol: string): Promise<number> {
+    if (this.lotSizeCache.has(symbol)) return this.lotSizeCache.get(symbol)!;
+    const info = await this.getExchangeInfo();
+    const s = info.symbols.find((x) => x.symbol === symbol);
+    if (!s) return 0.001; // default
+    const lotFilter = s.filters?.find((f) => f.filterType === "LOT_SIZE");
+    const step = lotFilter?.stepSize ? Number(lotFilter.stepSize) : 0.001;
+    this.lotSizeCache.set(symbol, step);
+    return step;
+  }
+
+  async roundQuantity(symbol: string, qty: number): Promise<number> {
+    const step = await this.getLotStepSize(symbol);
+    const precision = Math.max(0, Math.ceil(-Math.log10(step)));
+    return Number(qty.toFixed(precision));
   }
 
   async getMarkPrice(symbol: string): Promise<{ markPrice: string }> {
@@ -239,11 +287,12 @@ export class BinanceClient {
     stopPrice?: number;
     reduceOnly?: boolean;
   }): Promise<{ orderId: number; status: string }> {
+    const qty = await this.roundQuantity(params.symbol, params.quantity);
     const body: Record<string, string | number> = {
       symbol: params.symbol,
       side: params.side,
       type: params.type,
-      quantity: params.quantity,
+      quantity: qty,
     };
 
     if (params.price) body.price = params.price;

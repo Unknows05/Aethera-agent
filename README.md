@@ -1,95 +1,83 @@
-# Aethera v2 — Autonomous AI Trading Agent
+# Aethera
 
-AI-powered perpetual futures trading agent for Binance. Self-learning via LLM orchestrator, quant screening, and swarm intelligence network.
+Bot trading otomatis untuk Binance Futures. Jalan 24 jam — nyari sinyal, buka posisi, atur SL/TP, tutup sendiri.
 
-## Prerequisites
+## Butuh Ini
 
-- **Node.js** ≥20 ([nvm](https://github.com/nvm-sh/nvm) recommended)
-- **Git**
-- Binance Futures API key (testnet recommended first)
-- OpenRouter API key ([openrouter.ai](https://openrouter.ai/keys))
+| Kebutuhan | Cara Dapat |
+|-----------|-----------|
+| Node.js 20+ | `nvm install 20` (atau download di nodejs.org) |
+| Git | `sudo apt install git` (Linux) atau download git-scm.com |
+| Binance API Key | Dashboard Binance → API Management → buat key baru |
+| OpenRouter API Key | openrouter.ai → sign up → buat key |
+
+> Kalau belum punya Node.js, pakai **Bun** — 1 detik install: `curl -fsSL https://bun.sh/install | bash`
 
 ## Install
 
+**Linux / Mac:**
 ```bash
-git clone https://github.com/Unknows05/Aethera-agent
-cd Aethera-agent/agent
-npm install
+curl -fsSL https://raw.githubusercontent.com/Unknows05/Aethera-agent/main/install.sh | bash
 ```
 
-## Setup
-
-```bash
-npm run setup
-# or
-npx aethera init
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Unknows05/Aethera-agent/main/install.ps1 | iex
 ```
 
-Wizard akan meminta:
-1. Hivemind hub URL (opsional, enter untuk skip)
-2. Binance API key + secret
-3. OpenRouter API key + model
-4. Telegram bot token (opsional)
-5. Risk parameters (max drawdown, target equity, dll)
+Install selesai dalam ~2 menit. Semua otomatis.
 
-## Run
+## Jalankan
 
 ```bash
-# Dry-run — tidak ada transaksi beneran
-DRY_RUN=true npm start
-
-# Live mode
-npm start
+aethera init          ← isi API key, target profit, dll (sekali doang)
+aethera start         ← bot jalan, tampilan layar penuh
 ```
 
-### Mode
-
-| Perintah | Keterangan |
-|----------|------------|
-| `npm start` | Hunter cycle (scan → LLM → buka) + Healer cycle (SL/TP/OOR) |
-| `npm run dev` | Sama seperti start dengan development model |
-| `npx aethera daemon start` | Background via PM2/systemd |
-
-### Telegram Commands
-
-Setelah setup Telegram, kirim ke bot:
-- `/status` — balance + posisi
-- `/positions` — detail posisi terbuka
-- `/close ETHUSDT` — tutup posisi
-- `/signals` — kandidat teratas
-- `/network` — status hivemind
-
-## Cara Kerja
-
-```
-Hunter cycle (30min)         Healer cycle (5min)
-  Scan market                  Cek posisi terbuka
-  Enrich (OI, funding, L/S)    Deterministic: SL/TP/OOR
-  Hivemind consensus            LLM: hold/close/trail
-  LLM → buka posisi             Telegram notifikasi
-  Log + evolve threshold
-```
-
-Dua agen terpisah dengan tools berbeda:
-- **Hunter**: scan_market, open_long, open_short, wait
-- **Healer**: close_position, partial_close, trail_sl, wait
-
-## Hivemind Network
-
-Hubungkan ke swarm intelligence untuk berbagi sinyal dan pelajaran dengan agen lain.
+**Udah. Bot jalan 24 jam. Tutup terminal → bot ikut mati.**  
+Kalau mau bot tetap jalan walau terminal ditutup:
 
 ```bash
-curl -X POST https://hivemind.aethera-s1.com/api/hivemind/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"my-agent","apiKey":"my-secret-key"}'
+aethera daemon start  ← jalan di background
 ```
 
-## Uninstall
+## Bot Ngapain Aja?
+
+| Waktu | Kerjaan |
+|-------|---------|
+| Setiap 30 menit | Scan 500+ koin → hitung indikator → LLM pilih kandidat → buka posisi |
+| Setiap 5 menit | Cek posisi → SL kena? TP kena? Kepalaman? → tutup otomatis |
+| Real-time | Kirim sinyal ke dashboard, Telegram, server pusat |
+
+## Di Dalam Satu Command
+
+```
+├── Scanner     — RSI, MACD, ADX, Bollinger, Volume, Orderbook
+├── LLM         — OpenRouter (pilih model sendiri)
+├── Risk        — Circuit breaker, drawdown limit, daily loss cap
+├── Learning    — Catat performa tiap posisi, sesuaikan threshold
+└── Hivemind    — Berbagi sinyal + pelajaran antar user
+```
+
+## Telegram
+
+Biar bisa monitor dari HP:
+```bash
+aethera init  ← nanti diminta token Telegram
+```
+Kirim perintah ke bot:
+```
+/status      — saldo + posisi
+/positions   — detail posisi
+/close BTC  — tutup posisi
+```
+
+## Cara Hapus
 
 ```bash
-npx aethera uninstall
+aethera uninstall
 ```
 
 ## Disclaimer
 
-Risk tinggi. Mulai dengan `DRY_RUN=true` dan testnet. Bukan saran keuangan.
+Risk tinggi. Bot ini pake uang beneran. Bukan saran keuangan. Jangan deposit > rugi.

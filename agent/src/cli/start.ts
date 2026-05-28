@@ -310,11 +310,37 @@ export async function startServer(options?: StartOptions): Promise<void> {
 
 
   // Graceful shutdown
-  const cleanup = () => {
+  const cleanup = async () => {
+    console.log(`\n[${new Date().toISOString()}] Graceful shutdown initiated...`);
+
+    try {
+      const pos = await orchestrator.binance.getPositionRisk();
+      const openPos = pos.filter((p) => Number(p.positionAmt) !== 0);
+      if (openPos.length > 0) {
+        console.log(`[${new Date().toISOString()}] Open positions (${openPos.length}):`);
+        for (const p of openPos) {
+          const amt = Number(p.positionAmt);
+          const side = amt > 0 ? "LONG" : "SHORT";
+          console.log(`  ${p.symbol} ${side} | Entry: $${Number(p.entryPrice)} | PnL: $${Number(p.unrealizedProfit).toFixed(2)}`);
+        }
+        const totalPnl = openPos.reduce((s: number, p: { unrealizedProfit: string }) => s + Number(p.unrealizedProfit), 0);
+        console.log(`[${new Date().toISOString()}] Total unrealized PnL: $${totalPnl.toFixed(2)}`);
+      } else {
+        console.log(`[${new Date().toISOString()}] No open positions.`);
+      }
+    } catch (e) {
+      console.error(`[${new Date().toISOString()}] Error capturing positions:`, e);
+    }
+
     clearInterval(hunterInterval);
     clearInterval(healerInterval);
     if (tuiProcess) tuiProcess.kill();
-    if (hc) hc.disconnect();
+    if (hc) {
+      try {
+        hc.disconnect();
+      } catch { /* ignore */ }
+    }
+    console.log(`[${new Date().toISOString()}] Shutdown complete.`);
     process.exit(0);
   };
   process.on("SIGINT", cleanup);

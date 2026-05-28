@@ -209,6 +209,28 @@ export interface ToolCall {
   };
 }
 
+// ── Position State (module-level, in-memory) ──
+export interface PositionState {
+  symbol: string;
+  side: "LONG" | "SHORT";
+  entryPrice: number;
+  slPrice: number;
+  tpPrice: number;
+  openTime: number;
+  size: number;
+  leverage: number;
+}
+
+export const positionStates = new Map<string, PositionState>();
+
+export function recordPositionOpen(pos: PositionState): void {
+  positionStates.set(pos.symbol, pos);
+}
+
+export function recordPositionClose(symbol: string): void {
+  positionStates.delete(symbol);
+}
+
 export interface ToolResult {
   toolCallId: string;
   success: boolean;
@@ -221,17 +243,68 @@ export interface HardRuleCheck {
   reason?: string;
 }
 
+// ── Module-level Circuit Breaker State ──
+let circuitBreakerActive = false;
+let circuitBreakerReason = "";
+
+export function activateCircuitBreaker(reason: string): void {
+  circuitBreakerActive = true;
+  circuitBreakerReason = reason;
+}
+
+export function resetCircuitBreaker(): void {
+  circuitBreakerActive = false;
+  circuitBreakerReason = "";
+}
+
+export function getCircuitBreakerState(): { active: boolean; reason: string } {
+  return { active: circuitBreakerActive, reason: circuitBreakerReason };
+}
+
+// ── Once-per-session Guard ──
+// Tracks which write actions have been executed in current cycle
+let sessionActions = new Set<string>();
+
+export function resetSessionGuard(): void {
+  sessionActions = new Set<string>();
+}
+
+export function isActionExecuted(action: string, symbol: string): boolean {
+  return sessionActions.has(`${action}:${symbol}`);
+}
+
+export function markActionExecuted(action: string, symbol: string): void {
+  sessionActions.add(`${action}:${symbol}`);
+}
+
+const WRITE_ACTIONS = new Set(["open_long", "open_short", "close_position", "partial_close", "trail_sl"]);
+
+export function isWriteAction(action: string): boolean {
+  return WRITE_ACTIONS.has(action);
+}
+
 export function checkHardRules(
   action: string,
   params: Record<string, unknown>,
   ctx: Context,
 ): HardRuleCheck {
-  // Circuit breaker
-  if (ctx.risk.circuitBreakerActive && ["open_long", "open_short"].includes(action)) {
+  // Circuit breaker — blocks ALL write actions, not just open
+  if (circuitBreakerActive && isWriteAction(action)) {
     return {
       allowed: false,
-      reason: `Circuit breaker active: ${ctx.risk.circuitBreakerReason}`,
+      reason: `Circuit breaker active: ${circuitBreakerReason}`,
     };
+  }
+
+  // Once-per-session guard — each action+symbol only once per cycle
+  if (isWriteAction(action)) {
+    const symbol = (params.symbol as string) || "";
+    if (isActionExecuted(action, symbol)) {
+      return {
+        allowed: false,
+        reason: `Once-per-session guard: ${action} ${symbol} already executed this cycle`,
+      };
+    }
   }
 
   // Max trades per day

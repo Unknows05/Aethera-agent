@@ -5,7 +5,22 @@ import type { ScoredCoin } from "../screening/types.js";
 import type { Config } from "../config/schema.js";
 import type { HivemindClient } from "../hivemind/client.js";
 import { buildGoalState, buildContext, formatContextForLLM, type Context, type Lesson, type ScreeningResult } from "./context.js";
-import { HUNTER_TOOLS, HEALER_TOOLS, type ToolCall, type ToolResult } from "./tools.js";
+import {
+  HUNTER_TOOLS,
+  HEALER_TOOLS,
+  checkHardRules,
+  recordPositionOpen,
+  recordPositionClose,
+  markActionExecuted,
+  resetSessionGuard,
+  activateCircuitBreaker,
+  resetCircuitBreaker,
+  getCircuitBreakerState,
+  positionStates,
+  type PositionState,
+  type ToolCall,
+  type ToolResult,
+} from "./tools.js";
 import { TradeHandler } from "./tool-handlers/trade.js";
 import { getLessonsForPrompt } from "../learning/lessons.js";
 
@@ -96,8 +111,20 @@ async function executeToolCall(
   tradeHandler: TradeHandler,
 ): Promise<ToolResult> {
   const args = JSON.parse(call.function.arguments) as Record<string, unknown>;
+  const action = call.function.name;
+  const symbol = (args.symbol as string) || "";
 
-  switch (call.function.name) {
+  // ── LAYER 1: Hard Rules Check (circuit breaker + drawdown + once-per-session) ──
+  const ruleCheck = checkHardRules(action, args, ctx);
+  if (!ruleCheck.allowed) {
+    return {
+      toolCallId: call.id,
+      success: false,
+      error: `Hard rule blocked: ${ruleCheck.reason}`,
+    };
+  }
+
+  switch (action) {
     case "wait":
       return {
         toolCallId: call.id,
@@ -106,7 +133,6 @@ async function executeToolCall(
       };
 
     case "open_long": {
-      const symbol = args.symbol as string;
       const confidence = args.confidence as number;
       const signal = ctx.screening.find((s) => s.symbol === symbol);
 
@@ -128,7 +154,7 @@ async function executeToolCall(
       const notional = riskAmount / slPct;
       const positionSize = notional > 0 ? notional / (signal.sl < signal.tp ? signal.sl : signal.tp) : 0;
 
-      return tradeHandler.executeOpenLong(
+      const result = await tradeHandler.executeOpenLong(
         call.id,
         { symbol, confidence, reason: args.reason as string },
         ctx,
@@ -137,10 +163,25 @@ async function executeToolCall(
         signal.tp,
         tier.maxLeverage,
       );
+
+      // Record position state on success
+      if (result.success) {
+        recordPositionOpen({
+          symbol,
+          side: "LONG",
+          entryPrice: (result.data?.entryPrice as number) || 0,
+          slPrice: signal.sl,
+          tpPrice: signal.tp,
+          openTime: Date.now(),
+          size: positionSize,
+          leverage: tier.maxLeverage,
+        });
+        markActionExecuted(action, symbol);
+      }
+      return result;
     }
 
     case "open_short": {
-      const symbol = args.symbol as string;
       const confidence = args.confidence as number;
       const signal = ctx.screening.find((s) => s.symbol === symbol);
 
@@ -162,7 +203,7 @@ async function executeToolCall(
       const notional = riskAmount / slPct;
       const positionSize = notional > 0 ? notional / (signal.sl > signal.tp ? signal.sl : signal.tp) : 0;
 
-      return tradeHandler.executeOpenShort(
+      const result = await tradeHandler.executeOpenShort(
         call.id,
         { symbol, confidence, reason: args.reason as string },
         ctx,
@@ -171,16 +212,48 @@ async function executeToolCall(
         signal.tp,
         tier.maxLeverage,
       );
+
+      // Record position state on success
+      if (result.success) {
+        recordPositionOpen({
+          symbol,
+          side: "SHORT",
+          entryPrice: (result.data?.entryPrice as number) || 0,
+          slPrice: signal.sl,
+          tpPrice: signal.tp,
+          openTime: Date.now(),
+          size: positionSize,
+          leverage: tier.maxLeverage,
+        });
+        markActionExecuted(action, symbol);
+      }
+      return result;
     }
 
-    case "close_position":
-      return tradeHandler.executeClosePosition(call.id, args as { symbol: string; reason: string });
+    case "close_position": {
+      const result = await tradeHandler.executeClosePosition(call.id, args as { symbol: string; reason: string });
+      if (result.success) {
+        recordPositionClose(symbol);
+        markActionExecuted(action, symbol);
+      }
+      return result;
+    }
 
-    case "partial_close":
-      return tradeHandler.executePartialClose(
+    case "partial_close": {
+      const result = await tradeHandler.executePartialClose(
         call.id,
         args as { symbol: string; percent: number; reason: string },
       );
+      if (result.success) {
+        // If 100% close, remove position state
+        const percent = args.percent as number;
+        if (percent >= 100) {
+          recordPositionClose(symbol);
+        }
+        markActionExecuted(action, symbol);
+      }
+      return result;
+    }
 
     case "trail_sl":
       return {
@@ -391,6 +464,9 @@ export async function runHunterCycle(
 ): Promise<CycleResult> {
   const startTime = Date.now();
 
+  // Reset session guard for fresh cycle
+  resetSessionGuard();
+
   const ctx = await gatherContext(
     orchestrator.binance,
     orchestrator.appConfig,
@@ -399,6 +475,13 @@ export async function runHunterCycle(
     orchestrator.scanner,
     orchestrator.hivemind,
   );
+
+  // Auto-reset circuit breaker if condition resolved
+  const cb = getCircuitBreakerState();
+  if (cb.active && ctx.risk.drawdown < 0.20) {
+    resetCircuitBreaker();
+    console.log(`[${new Date().toISOString()}] Circuit breaker auto-reset: drawdown back to ${(ctx.risk.drawdown * 100).toFixed(1)}%`);
+  }
 
   // Multi-turn ReAct loop — max 3 langkah
   const systemMsg = {
@@ -536,12 +619,93 @@ export async function runHunterCycle(
   };
 }
 
+const OOR_THRESHOLD_MS = 48 * 60 * 60 * 1000; // 48 jam
+const MIN_YIELD_PCT = 0.3; // 0.3% minimal gain per jam
+const SL_PCT = 0.025; // 2.5% dari entry untuk SL
+const TP_PCT = 0.05; // 5% dari entry untuk TP
+
+interface DeterministicAction {
+  symbol: string;
+  side: "LONG" | "SHORT";
+  action: "close_position";
+  reason: string;
+}
+
+function calcPnlPct(pos: { side: string; entryPrice: number; markPrice: number; leverage: number }): number {
+  const priceChange = pos.side === "LONG"
+    ? (pos.markPrice - pos.entryPrice) / pos.entryPrice
+    : (pos.entryPrice - pos.markPrice) / pos.entryPrice;
+  return priceChange * pos.leverage;
+}
+
+function deterministicHealerCheck(
+  openPositions: Array<{ symbol: string; positionAmt: string; entryPrice: string; markPrice: string; unrealizedProfit: string; leverage: string }>,
+): DeterministicAction[] {
+  const actions: DeterministicAction[] = [];
+
+  for (const p of openPositions) {
+    const amt = Number(p.positionAmt);
+    const side = amt > 0 ? "LONG" : "SHORT";
+    const entryPrice = Number(p.entryPrice);
+    const markPrice = Number(p.markPrice);
+    const leverage = Number(p.leverage);
+    const pnlPct = calcPnlPct({ side, entryPrice, markPrice, leverage });
+
+    const stored = positionStates.get(p.symbol);
+
+    // 1. TP hit (gunakan stored tpPrice jika ada, atau default TP_PCT)
+    if (stored?.tpPrice && stored.tpPrice > 0) {
+      const tpHit = side === "LONG" ? markPrice >= stored.tpPrice : markPrice <= stored.tpPrice;
+      if (tpHit) {
+        actions.push({ symbol: p.symbol, side, action: "close_position", reason: `TP hit (stored TP $${stored.tpPrice}, mark $${markPrice})` });
+        continue;
+      }
+    } else if (pnlPct >= TP_PCT * 100) {
+      actions.push({ symbol: p.symbol, side, action: "close_position", reason: `TP hit (PnL ${pnlPct.toFixed(1)}% >= ${TP_PCT * 100}%)` });
+      continue;
+    }
+
+    // 2. SL hit (gunakan stored slPrice jika ada, atau default SL_PCT)
+    if (stored?.slPrice && stored.slPrice > 0) {
+      const slHit = side === "LONG" ? markPrice <= stored.slPrice : markPrice >= stored.slPrice;
+      if (slHit) {
+        actions.push({ symbol: p.symbol, side, action: "close_position", reason: `SL hit (stored SL $${stored.slPrice}, mark $${markPrice})` });
+        continue;
+      }
+    } else if (pnlPct <= -(SL_PCT * 100)) {
+      actions.push({ symbol: p.symbol, side, action: "close_position", reason: `SL hit (PnL ${pnlPct.toFixed(1)}% <= -${SL_PCT * 100}%)` });
+      continue;
+    }
+
+    // 3. OOR — position running too long without progress
+    if (stored) {
+      const ageMs = Date.now() - stored.openTime;
+      if (ageMs > OOR_THRESHOLD_MS) {
+        actions.push({ symbol: p.symbol, side, action: "close_position", reason: `OOR: position open ${(ageMs / 3600000).toFixed(0)}h > 48h limit` });
+        continue;
+      }
+
+      // 4. Yield check — position open for hours but minimal gain
+      const ageHours = ageMs / 3600000;
+      if (ageHours > 4 && pnlPct < MIN_YIELD_PCT * ageHours / 4) {
+        actions.push({ symbol: p.symbol, side, action: "close_position", reason: `Low yield: PnL ${pnlPct.toFixed(1)}% in ${ageHours.toFixed(0)}h (expected ≥${(MIN_YIELD_PCT * ageHours / 4).toFixed(1)}%)` });
+        continue;
+      }
+    }
+  }
+
+  return actions;
+}
+
 export async function runHealerCycle(
   orchestrator: OrchestratorConfig,
   startEquity: number,
   daysElapsed: number,
 ): Promise<CycleResult> {
   const startTime = Date.now();
+
+  // Reset session guard for fresh cycle
+  resetSessionGuard();
 
   const ctx = await gatherContext(
     orchestrator.binance,
@@ -551,6 +715,13 @@ export async function runHealerCycle(
     orchestrator.scanner,
     orchestrator.hivemind,
   );
+
+  // Auto-reset circuit breaker if condition resolved
+  const cb = getCircuitBreakerState();
+  if (cb.active && ctx.risk.drawdown < 0.20) {
+    resetCircuitBreaker();
+    console.log(`[${new Date().toISOString()}] Healer: circuit breaker auto-reset, drawdown back to ${(ctx.risk.drawdown * 100).toFixed(1)}%`);
+  }
 
   const positions = await orchestrator.binance.getPositionRisk();
   const openPositions = positions.filter((p) => Number(p.positionAmt) !== 0);
@@ -565,7 +736,42 @@ export async function runHealerCycle(
     };
   }
 
-  const positionSummary = openPositions
+  // ── LAYER 2: Deterministic Healer Checks — SL/TP/OOR/Yield ──
+  const deterministicActions = deterministicHealerCheck(openPositions);
+
+  // Execute deterministic actions langsung (no LLM)
+  const results: ToolResult[] = [];
+  for (const d of deterministicActions) {
+    const fakeCall: ToolCall = {
+      id: `deterministic_${d.symbol}_${Date.now()}`,
+      type: "function",
+      function: {
+        name: d.action,
+        arguments: JSON.stringify({ symbol: d.symbol, reason: d.reason }),
+      },
+    };
+    const result = await executeToolCall(fakeCall, ctx, orchestrator.tradeHandler);
+    results.push(result);
+  }
+
+  // ── Filter positions that weren't deterministically closed ──
+  const closedSymbols = new Set(results.map((r) => (r.data?.symbol as string) || ""));
+  const remainingPositions = openPositions.filter((p) => !closedSymbols.has(p.symbol));
+
+  if (remainingPositions.length === 0) {
+    return {
+      agent: "healer",
+      decisions: results,
+      context: ctx,
+      llmResponse: deterministicActions.length > 0
+        ? `Deterministic: ${deterministicActions.map((a) => `${a.action} ${a.symbol} (${a.reason})`).join("; ")}`
+        : null,
+      durationMs: Date.now() - startTime,
+    };
+  }
+
+  // ── LAYER 3: LLM for remaining positions ──
+  const positionSummary = remainingPositions
     .map((p) => {
       const amt = Number(p.positionAmt);
       return `${p.symbol} ${amt > 0 ? "LONG" : "SHORT"} | Entry: $${Number(p.entryPrice)} | PnL: ${Number(p.unrealizedProfit).toFixed(2)} | Liq: $${Number(p.liquidationPrice)}`;
@@ -573,7 +779,7 @@ export async function runHealerCycle(
     .join("\n");
 
   const healerPrompt = `=== HEALER CYCLE ===
-Manage existing positions. Decide for EACH position:
+Manage remaining positions after deterministic SL/TP/OOR checks. Decide for EACH position:
 - hold (let it run)
 - close_position (take profit or cut loss)
 - partial_close (take profit partially)
@@ -603,7 +809,6 @@ For each position, call the appropriate tool. If all positions are healthy, call
 
   const toolCalls = parseToolCalls(llmResponse);
 
-  const results: ToolResult[] = [];
   for (const call of toolCalls) {
     const result = await executeToolCall(call, ctx, orchestrator.tradeHandler);
     results.push(result);

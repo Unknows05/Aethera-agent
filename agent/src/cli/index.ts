@@ -4,7 +4,10 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { execSync, spawn } from "node:child_process";
+
+const PID_FILE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "data", "daemon.pid");
 import { homedir, platform } from "node:os";
 
 async function uninstall() {
@@ -155,22 +158,117 @@ async function main() {
 async function handleDaemon(sub: string | undefined) {
   switch (sub) {
     case "start": {
+      // Cek apakah udah jalan
+      const existing = readPid();
+      if (existing && isRunning(existing)) {
+        console.log(pc.yellow(`Daemon already running (PID ${existing})`));
+        return;
+      }
       const { startServer } = await import("./start.js");
-      console.log("Daemon starting...");
-      await startServer({ noTui: true });
+      // Fork ke background
+      const child = spawn(process.argv[0], [process.argv[1], "start"], {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env, NO_TUI: "1" },
+      });
+      child.unref();
+      if (child.pid) {
+        writePid(child.pid);
+        console.log(pc.green(`Daemon started (PID ${child.pid})`));
+      } else {
+        console.log(pc.red("Failed to start daemon — no PID"));
+      }
       break;
     }
-    case "stop":
-      console.log("Daemon stopping...");
+    case "stop": {
+      const pid = readPid();
+      if (!pid) {
+        console.log(pc.yellow("No PID file found — daemon not running?"));
+        return;
+      }
+      try {
+        process.kill(pid, "SIGTERM");
+        // Tunggu sebentar
+        setTimeout(() => {
+          try { process.kill(pid, "SIGKILL"); } catch { /* sudah mati */ }
+        }, 5000);
+        removePid();
+        console.log(pc.green(`Daemon (PID ${pid}) stopped`));
+      } catch (e) {
+        removePid();
+        console.log(pc.yellow(`PID ${pid} not found — cleaned up`));
+      }
       break;
-    case "status":
-      console.log("Daemon: running");
+    }
+    case "status": {
+      const pid = readPid();
+      if (pid && isRunning(pid)) {
+        // Cek via API
+        try {
+          const res = await fetch("http://localhost:8000/api/health");
+          if (res.ok) {
+            const data = await res.json() as { uptime: number };
+            console.log(pc.green(`Daemon: running (PID ${pid}, uptime ${Math.floor(data.uptime / 1000)}s)`));
+          } else {
+            console.log(pc.yellow(`Daemon: running (PID ${pid}), but API not responding`));
+          }
+        } catch {
+          console.log(pc.yellow(`Daemon: process running (PID ${pid}), but API unreachable`));
+        }
+      } else if (pid) {
+        removePid();
+        console.log(pc.red("Daemon: not running (stale PID cleaned up)"));
+      } else {
+        console.log(pc.red("Daemon: not running"));
+      }
       break;
-    case "logs":
-      console.log("Daemon logs:");
+    }
+    case "logs": {
+      try {
+        const logs = execSync(
+          `journalctl -u aethera-agent --since "1 hour ago" --no-pager -n 50 2>/dev/null || echo "(logs via systemctl journalctl)"`,
+          { encoding: "utf8", timeout: 5000 }
+        );
+        console.log(logs);
+      } catch {
+        console.log("No journalctl logs available — try systemctl status aethera-agent");
+      }
       break;
+    }
     default:
       console.log("Usage: aethera daemon <start|stop|status|logs>");
+  }
+}
+
+function readPid(): number | null {
+  try {
+    if (existsSync(PID_FILE)) {
+      return Number(readFileSync(PID_FILE, "utf8").trim());
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function writePid(pid: number): void {
+  try {
+    const dir = resolve(PID_FILE, "..");
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    writeFileSync(PID_FILE, String(pid));
+  } catch { /* non-critical */ }
+}
+
+function removePid(): void {
+  try { unlinkSync(PID_FILE); } catch { /* ignore */ }
+}
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 

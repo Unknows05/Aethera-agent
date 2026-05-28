@@ -189,10 +189,21 @@ export async function initWizard(): Promise<void> {
   }
 
   const modelChoices = [
-    { value: "deepseek/deepseek-chat", label: "deepseek/deepseek-chat — ★ Best balance", hint: "$0.14/M" },
-    { value: "google/gemini-2.0-flash", label: "google/gemini-2.0-flash — Fast & free", hint: "FREE" },
-    { value: "meta-llama/llama-3.1-8b-instruct", label: "meta-llama/llama-3.1-8b — Free", hint: "FREE" },
-    { value: "anthropic/claude-sonnet", label: "anthropic/claude-sonnet — Strong reasoning", hint: "$3.00/M" },
+    // ── FREE (Tool Calling ✅) ──
+    { value: "google/gemini-2.0-flash", label: "google/gemini-2.0-flash — ★ Fast & free", hint: "FREE ✅tools" },
+    { value: "meta-llama/llama-3.1-8b-instruct", label: "meta-llama/llama-3.1-8b-instruct — Free", hint: "FREE ✅tools" },
+    { value: "google/gemma-2-27b-it", label: "google/gemma-2-27b-it — Lightweight", hint: "FREE ✅tools" },
+    { value: "mistralai/mistral-7b-instruct", label: "mistralai/mistral-7b-instruct", hint: "FREE ✅tools" },
+    // ── PAID / VALUE (Tool Calling ✅) ──
+    { value: "deepseek/deepseek-chat", label: "deepseek/deepseek-chat — ★ Best value", hint: "$0.14/M ✅tools" },
+    { value: "openai/gpt-4o-mini", label: "openai/gpt-4o-mini — Fast & cheap", hint: "$0.15/M ✅tools" },
+    { value: "cohere/command-r-plus", label: "cohere/command-r-plus — Good RAG", hint: "$?/M ✅tools" },
+    { value: "openai/gpt-4o", label: "openai/gpt-4o — Best overall", hint: "$2.50/M ✅tools" },
+    { value: "anthropic/claude-3.5-haiku", label: "anthropic/claude-3.5-haiku — Fast reasoning", hint: "$0.80/M ✅tools" },
+    { value: "anthropic/claude-sonnet", label: "anthropic/claude-sonnet — Strong reasoning", hint: "$3.00/M ✅tools" },
+    // ── FREE (NO tools — fallback JSON) ──
+    { value: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", label: "nvidia/nemotron-3-nano-omni (NO tools)", hint: "FREE ⚠️JSON" },
+    // ── CUSTOM ──
     { value: "__custom__", label: "Type custom model ID...", hint: "" },
   ];
 
@@ -240,10 +251,14 @@ export async function initWizard(): Promise<void> {
 
   let selectedHealer: string;
   const healerChoice = await p.select({
-    message: "Select Model for Healer (fast, cheap):",
+    message: "Select Model for Healer (fast, cheap, tools optional):",
     options: [
-      { value: "google/gemini-2.0-flash", label: "google/gemini-2.0-flash — FREE", hint: "Recommended" },
-      { value: "meta-llama/llama-3.1-8b-instruct", label: "meta-llama/llama-3.1-8b — FREE", hint: "" },
+      { value: "google/gemini-2.0-flash", label: "google/gemini-2.0-flash — ★ Fast & free", hint: "FREE ✅tools" },
+      { value: "meta-llama/llama-3.1-8b-instruct", label: "meta-llama/llama-3.1-8b-instruct", hint: "FREE ✅tools" },
+      { value: "google/gemma-2-27b-it", label: "google/gemma-2-27b-it", hint: "FREE ✅tools" },
+      { value: "mistralai/mistral-7b-instruct", label: "mistralai/mistral-7b-instruct", hint: "FREE ✅tools" },
+      { value: "deepseek/deepseek-chat", label: "deepseek/deepseek-chat", hint: "$0.14/M" },
+      { value: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", label: "nvidia/nemotron (NO tools)", hint: "FREE ⚠️JSON" },
       { value: "__same__", label: "Same as primary", hint: "" },
     ],
   });
@@ -260,8 +275,11 @@ export async function initWizard(): Promise<void> {
   const curatorChoice = await p.select({
     message: "Select Model for Curator/Learning (strong reasoning):",
     options: [
-      { value: "anthropic/claude-sonnet", label: "anthropic/claude-sonnet — Best reasoning", hint: "$3.00/M" },
-      { value: "deepseek/deepseek-chat", label: "deepseek/deepseek-chat — Good balance", hint: "$0.14/M" },
+      { value: "anthropic/claude-sonnet", label: "anthropic/claude-sonnet — ★ Best reasoning", hint: "$3.00/M" },
+      { value: "deepseek/deepseek-chat", label: "deepseek/deepseek-chat — Good value", hint: "$0.14/M" },
+      { value: "openai/gpt-4o-mini", label: "openai/gpt-4o-mini — Fast & cheap", hint: "$0.15/M" },
+      { value: "anthropic/claude-3.5-haiku", label: "anthropic/claude-3.5-haiku", hint: "$0.80/M" },
+      { value: "google/gemini-2.0-flash", label: "google/gemini-2.0-flash", hint: "FREE" },
       { value: "__same__", label: "Same as primary", hint: "" },
     ],
   });

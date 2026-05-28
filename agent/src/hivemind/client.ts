@@ -212,7 +212,7 @@ export class HivemindClient {
       };
 
       this.ws.onerror = () => {
-        this.ws?.close();
+        // ws udah error state — close() bakal trigger loop infinite di undici
       };
     } catch {
       this.reconnectTimer = setTimeout(() => this.connectWs(), 5000);

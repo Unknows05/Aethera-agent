@@ -113,8 +113,13 @@ export async function changeModel(): Promise<void> {
 
   const selected = await pickModel(client, "Select new primary model:");
   cfg.openrouter.primary = selected;
+  // Healer uses fallback[0]; make sure it's not left on old default
+  if (cfg.openrouter.fallback[0] === "google/gemini-2.0-flash" || cfg.openrouter.fallback[0] === selected) {
+    cfg.openrouter.fallback[0] = selected;
+  }
   saveConfig(cfg);
 
   p.log.success(pc.green(`✓ Primary model changed to ${selected}`));
+  p.log.info(pc.cyan(`  Healer also uses: ${cfg.openrouter.fallback[0]}`));
   p.outro("Done!");
 }

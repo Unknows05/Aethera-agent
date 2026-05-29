@@ -75,11 +75,11 @@ export async function manualDeploy(): Promise<void> {
       (t) => balance >= t.min && balance <= t.max,
     ) ?? cfg.growth.equityTiers[cfg.growth.equityTiers.length - 1];
     const riskAmount = balance * equityTier.maxRisk;
-    const slPct = coin.sl > 0
-      ? Math.abs(coin.sl - (coin.direction === "LONG" ? coin.sl : coin.tp)) / (coin.direction === "LONG" ? coin.sl : coin.tp)
+    const slPct = coin.sl > 0 && coin.tp > 0
+      ? Math.abs(coin.sl - coin.tp) / Math.min(coin.sl, coin.tp)
       : 0.02;
     const notional = riskAmount / slPct;
-    const positionSize = notional > 0 ? notional / (coin.direction === "LONG" ? coin.sl : coin.tp) : 0;
+    const positionSize = notional > 0 ? notional / Math.min(coin.sl, coin.tp) : 0;
 
     const screeningResult: ScreeningResult = {
       symbol: coin.symbol,

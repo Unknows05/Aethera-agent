@@ -66,10 +66,11 @@ async function request<T>(
     .join("&");
 
   const timestamp = Date.now();
-  const fullQuery = queryString
-    ? `${queryString}&timestamp=${timestamp}`
-    : `timestamp=${timestamp}`;
-  const signature = signRequest(fullQuery, secret);
+  const withRecv = queryString
+    ? `${queryString}&recvWindow=15000&timestamp=${timestamp}`
+    : `recvWindow=15000&timestamp=${timestamp}`;
+  const signature = signRequest(withRecv, secret);
+  const fullQuery = withRecv;
 
   const url = `${BASE}${path}?${fullQuery}&signature=${signature}`;
 
